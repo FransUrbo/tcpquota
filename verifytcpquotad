@@ -1,0 +1,20 @@
+#!/bin/sh
+
+/bin/ps auxwww | grep TCPQuotad | grep -v grep >/dev/null
+
+if [ ! "$?" = 0 ]; then
+    mail -stcpquotad_restart rootlist <<EOF
+This happend: `date`
+
+Again, tcpquota was not availible...
+Darn...
+
+Greatings $0
+
+PS. Will restart daemon...
+
+EOF
+	echo >>/var/log/tcpquotad.log "RESTART: $0 restarting tcpquotad..."
+	/etc/init.d/tcpquotad start > /dev/null
+fi
+

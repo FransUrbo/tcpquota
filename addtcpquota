@@ -1,0 +1,252 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+# Allowe or disallowe users to tcp quota...
+# 
+#
+# 1996-09-15 turbo: begun
+# 1996-09-16 turbo: changed so that database 'tcpquota' contain all info
+# 1996-09-23 turbo: adding 0 quota in the database when adding a NEW user
+#
+# $Header: /usr/lib/cvs/root/tcpquota/addtcpquota,v 1.13 1998/08/01 19:57:50 turbo Exp $
+#
+# $Log: addtcpquota,v $
+# Revision 1.13  1998/08/01 19:57:50  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.12  1998/05/24 19:46:48  turbo
+# Do all checking of the command line in a couple of elsif's, to minimize
+# the chance of an error...
+#
+# Revision 1.11  1998/05/24 15:52:45  turbo
+# Help more conformant with the other programs in the package...
+#
+# Revision 1.10  1998/03/31 12:16:02  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.9  1997/12/03 10:14:55  turbo
+# * Removed some fucked up CVS header lines...
+# * Rewrote the command line handling a little, more GNU like...
+# * Double check that we have the arguments required, before accessing the
+#   database.
+# * Moved the 'list_dbase()' to the library file, it was (practicaly) used
+#   by the 'chktcpquota' script to...
+# * If the user exist in the database, output/exit with 1, otherwise 0.
+# * Added a 'help()' function, which describes the usage...
+#
+# Revision 1.8  1997/11/26 21:29:54  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.7  1997/11/04 14:53:32  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.6  1997/09/26 15:52:57  turbo
+# * Forgot the $DEBUG variable... Perl complained...
+# * Better looking output if started without parameters... We have to understand
+#   that the 'lst' param takes param <user>... ('[lst <user>]' instead of
+#   '[lst] <user>')
+#
+# Revision 1.5  1997/08/17 17:19:19  turbo
+# * Added the cvs Header and Log
+# * Removed a lot of config file variables, that could possibly confuse a new
+# * user/admin of the package... We asume that whoever chooses to install the
+# * package, use our default... If not, they can go in and change the stuff
+# * themselvs!!
+#
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+#
+#
+
+# Include some magic...
+use DBI;
+#use Getopt::Long;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+
+$ADD   = 0; $REM = 0; $CHK = 0; $LST = 0;
+$dummy = 0;
+
+# Does we have any arguments?
+if( $ARGV[0] ) {
+    # Ohh yes.... Process it...
+
+    foreach $arg (@ARGV) {
+	# Help?
+	if( $arg eq '--help' || $arg eq '?' || $arg eq '-h' ) {
+	    &help();
+	} elsif( $arg eq 'all' || $arg eq '--all' || $arg eq '-A' ) {
+	    # Check if user exist...
+	    $CHK = 1;
+	} elsif( $arg eq 'add' || $arg eq '--add' || $arg eq '-a' ) {
+	    # Add user?
+	    $ADD = 1;
+	} elsif( $arg eq 'rem' || $arg eq '--rem' || $arg eq '-r' ) {
+	    # Remove user?
+	    $REM = 1;
+	} elsif( $arg eq 'lst' || $arg eq '--lst' || $arg eq '-l' ) {
+	    # List?
+	    $LST = 1;
+	}
+    }
+} else {
+    &help();
+}
+
+if( $LST != 1 ) {
+    $USER = $ARGV[1];
+}
+
+######################################################################
+#
+# configuration parameters
+#
+
+$PROG="addtcpquota";
+$CF_FILE="tcpquota.cf";
+
+%cf=(); # config array.
+&readconfig("$conf_dir/$CF_FILE",$PROG);
+
+######################################################################
+#
+# initializing stuff
+#
+
+# Open up the database connection...
+&open_sql_server();
+
+######################################################################
+#
+# main loop
+#
+if( $ADD == 1 ) {
+    if( $USER ) {
+	&write_dbase($USER,'add');
+    } else {
+	printf("Use $0 add <user>\n");
+    }
+    exit(0);
+}
+if( $REM == 1 ) {
+    if( $USER ) {
+	&write_dbase($USER,'rem');
+    } else {
+	printf("Use $0 rem <user>\n");
+    }
+    exit(0);
+}
+if( $CHK == 1 ) {
+    if( $USER ) {
+	&read_dbase($USER);
+    } else {
+	printf("Use $0 all <user>\n");
+    }
+    exit(0);
+}
+if( $LST == 1 ) {
+    &list_dbase("allowed");
+    exit(0);
+}
+
+######################################################################
+#
+# write_dbase( $user )
+#
+# Add the user to the database...
+#
+sub write_dbase {
+    local($user,$action) = @_;
+
+    # Add the user in the allowed database...
+    if( $action eq 'add' ) {
+	$query = "insert into allowed (name) values ('$user')";
+    } else {
+	$query = "delete from allowed where name like '$user'";
+    }
+    $sth   = $dbh->prepare($query);
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    # Add 0 in the quota database (if he/she doesn't exist there already)
+    if( $action eq 'add' ) {
+	# Check if the user already exist in the database...
+	$sth = $dbh->prepare("select * from tcptab where name like '$user'");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+
+	($dummy,$sec) = $sth->fetchrow_array;
+
+	if(!$sec) {
+	    $sth   = $dbh->prepare("insert into tcptab (name,quota) values ('$user',0)");
+	    $sth->execute || die "Could not execute query: $sth->errstr";
+	}
+    }
+
+    # Print some info about the actions...
+    if( $action eq 'add' ) {
+	print "Added user `$user'...\n";
+    } else {
+	print "Removed user `$user'...\n";
+    }
+}
+
+######################################################################
+#
+# read_dbase( $user )
+#
+# Check if the user is in the database...
+#
+sub read_dbase {
+    local($user) = @_;
+
+    # Query the database.
+    $sth = $dbh->prepare("select * from allowed where name like '$user'");
+    $sth->execute || &terminate( "Error when query..." );
+
+    ($name) = $sth->fetchrow_array;
+
+    if( $name ) {
+	# User is allowed...
+	print "1";
+	exit 1;
+    } else {
+	# User is not allowed...
+	print "0";
+	exit 0;
+    }
+}
+
+######################################################################
+#
+# help( void )
+#
+# Print out some help and then exit
+#
+sub help {
+    print "Usage: addtcpquota [OPTION] [<user>]\n";
+    print "  Where OPTIONS could be:\n";
+    print "   --all, all, -A       Check if a user is allowed to use the TCP link\n";
+    print "   --add, add, -a       Allow a user to use the TCP link\n";
+    print "   --rem, rem, -r       Dissallow a user to use the TCP link\n";
+    print "   --lst, lst, -l       List users allowed to use the TCP link\n";
+    exit 0;
+}

@@ -1,0 +1,575 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+# Open a set of hosts for masquerading.
+#
+# Used if one (for ex) have a set of computers which is used for
+# classes in Networking, and one want them to be able to use
+# the net free of charge...
+#
+# $Header: /usr/lib/cvs/root/tcpquota/tcp_masq_openfw,v 1.31 1998/08/01 19:57:53 turbo Exp $
+#
+# $Log: tcp_masq_openfw,v $
+# Revision 1.31  1998/08/01 19:57:53  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.30  1998/05/18 17:11:19  turbo
+# Forgot to 'exit()' after closing for a specified host (openhost -c xxxx).
+#
+# Revision 1.29  1998/05/14 17:03:11  turbo
+# * Exit if we get the parameter(s) '-g' or '-a'... Don't try to parse the
+#   commandline again!!!
+# * Make sure we have something to do, close OR open, when waiting for the
+#   server...
+#
+# Revision 1.28  1998/05/11 07:13:57  turbo
+# Make sure we cycle through the arguments, if anyone, not
+# asuming that any hostname is in the first arg, but the next
+# after the option.
+#
+# Revision 1.27  1998/04/28 11:48:23  turbo
+# If $ip (host the user is comming from) is not initialized (which it isn't
+# if we are trying to fetch a masq entry that does not exists in the masq
+# table in the mSQL database), make sure we catch this...
+#
+# Revision 1.26  1998/04/16 16:53:54  turbo
+# Added a force close of a host. 'openhost -c stannell'
+# closes stannell and removes the entry...
+#
+# Revision 1.25  1998/04/16 15:14:17  turbo
+# Added the option to open/close a specified group of
+# host's... You give a hostname, and that group of hosts
+# is opened or closed, depending on it's previous status.
+#
+# Revision 1.24  1998/04/16 14:28:08  turbo
+# Added the option to list a group of host.
+# You can give the command: 'openfw -l'
+# to list _ALL_ entries, or you can give:
+# 'openfw -l stannell' to list only those
+# hosts that exists in the same group as
+# stannell.
+#
+# Revision 1.23  1998/04/16 13:59:14  turbo
+# Added the option to list the firewall, and to
+# verify that the masqueraded host exists in the
+# database...
+# It also should clean up, if it doesn't, but I
+# haven't fixed this yet (I haven't desided on
+# this quite yet).
+#
+# Revision 1.22  1998/04/16 12:21:53  turbo
+# Added the feature to extract a special username from the
+# log database...
+#
+# Revision 1.21  1998/04/11 14:16:01  turbo
+# Forgot to output the correct host name (if we are using:
+# 'openfw -a billan' and I'm comming from papadoc, it should
+# say: '{Opening|Closing} for host: billan' not
+# '{Opening|Closing} for host: papadoc'.
+#
+# Revision 1.20  1998/04/11 14:07:21  turbo
+# Made it possible to open another host than ones one, for admin
+# usage of the 'Net link...
+#
+# Revision 1.19  1998/03/31 12:16:04  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.18  1998/03/31 11:09:36  turbo
+# * We now call the function 'write_db()' with a new parameter,
+#   'wait', which means we should (or should not) wait for the
+#   aqnowlagement...
+# * When opening a series of host's, we first give the order to
+#   the daemon/database, THEN we wait for aqnowlagement on that
+#   order... Should make the whole process of opening the firewall
+#   a little smoother and faster...
+#
+# Revision 1.17  1998/03/30 08:56:05  turbo
+# Forgot a newline again...
+#
+# Revision 1.16  1998/03/23 10:42:28  turbo
+# Forgot some newline's in the outputting of the '{Opened|Closed} for...' lines.
+#
+# Revision 1.15  1998/03/14 23:02:58  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.14  1998/03/13 19:41:47  turbo
+#   Don't call the functions '{open|close}_for_masq()', let the
+# daemon take care of that, we just write a 2 or 3 to the masq
+# table (the 'open' column) if we want the firewall opened or
+# closed...
+#
+#   This could be taken care of in the function 'write_db()' (that
+# is defined in the library file...
+#
+# Revision 1.13  1998/03/11 16:28:13  turbo
+# Added a 'open firewall for administrating purposes'....
+#
+# Revision 1.12  1998/01/23 15:48:07  turbo
+# Added the '--help' parameter.
+#
+# Revision 1.11  1998/01/16 15:10:02  turbo
+# Perl changed the way it handled file handles... When we cyckle through the
+# file, make sure we only do that while ! eof.
+#
+# Revision 1.10  1997/12/04 14:11:04  turbo
+# Got the fetching of the IP address from the utmp file to work, updated
+# the WHO variable and it's splitting accordingly...
+#
+# Revision 1.9  1997/12/02 15:18:51  turbo
+# * Forgot the utmp header file, could not check who's online...
+# * Had to rewrite the 'get_remote_name()' (which finds the host we are from)
+#   a little to utilize the new utmp checking...
+#
+# Revision 1.8  1997/11/26 21:47:10  turbo
+# * Deleted the function 'get_ip()', because we can use the function we made a
+#   couple weeks ago, 'find_ip()' which does the same thing, only faster, since
+#   it does not use a external program, it does a lib call instead...
+# * We have the possibility to use a homemade function, 'get_online()', which
+#   returns the users online right now, instead of using '/usr/bin/who'...
+#
+# Revision 1.7  1997/11/26 21:29:55  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.6  1997/11/26 19:54:57  turbo
+# * Logg all action when opening/closing the firewall... (so that we know who
+#   to blame when the firewall is left open).
+# * Added a 'log' parameter, so that we can list the logg table...
+#
+# Revision 1.5  1997/11/19 19:54:15  turbo
+# Instead of using '/sbin/ipfwadm -Fl -n' to get the masquerading entries, open
+# the file '/proc/net/ip_forward' which contains the same data, only in raw
+# mode... Might make the program a little faster, no overhead of starting a
+# external program...
+#
+# Revision 1.4  1997/11/17 15:57:10  turbo
+# Added the option to open/close a host for free surfing on the command line,
+# since one might not want to open for a whole room each time...
+#
+# Revision 1.3  1997/11/13 07:08:20  turbo
+# Fixed bugg conserning 'uninitialised variable'... If the host we are comming
+# from is not member of a group...
+#
+# Revision 1.2  1997/11/11 14:55:28  turbo
+# Call the free 'user' just free, instead of 'free of charge'...
+#
+# Revision 1.1  1997/11/11 14:46:52  turbo
+# Initial revision.
+#
+#
+
+# Include some magic...
+use POSIX;
+use DBI;
+use English;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+require "$lib_dir/utmp.ph";
+
+package main;
+
+%cf=(); # config
+$USER = $ENV{'USER'};
+$admin_host = 0;
+
+######################################################################
+
+&main();
+
+#
+# Main function...
+sub main {
+    my($name, $group);
+
+    # Initialize variables...
+    &init();
+
+    # Open the SQL server...
+    &open_sql_server();
+
+    # Does we have any arguments?
+    $i = 0;
+    if( $ARGV[$i] ) {
+	# Ohh yes.... Process it...
+
+	foreach $arg (@ARGV) {
+	    $i++;
+
+	    if( ($arg eq '?') || ($arg eq 'help') || ($arg eq '-h') || ($arg eq '--help') ) {
+		&help();
+	    } elsif( ($arg eq 'log') || ($arg eq '--log') ) {
+		if( $ARGV[$i] ) {
+		    &list_logg("logging_openfw", $ARGV[$i]);
+		} else {
+		    &list_logg("logging_openfw", "");
+		}
+	    } elsif( ($arg eq 'lst') || ($arg eq '--lst') || ($arg eq '-l') ) {
+		if( $ARGV[$i] ) {
+		    &list_firewall($ARGV[$i]);
+		} else {
+		    &list_firewall();
+		}
+	    } elsif( ($arg eq 'grp') || ($arg eq '--grp') || ($arg eq '-g') ) {
+		if( $ARGV[$i] ) {
+		    # Get remote hostname...
+		    $name  = &get_remote_name($USER);
+
+		    # Check if the specified computer belongs to a computer group...
+		    $group = &check_group($ARGV[$i]);
+
+		    # Open or close the firewall for this group of hosts...
+		    &fix_firewall($group);
+		} else {
+		    &help();
+		}
+
+		exit(0);
+	    } elsif( ($arg eq 'cls') || ($arg eq '--cls') || ($arg eq '-c') ) {
+		# Force close the firewall for a specied host...
+
+		# Get remote hostname...
+		$name  = &get_remote_name($USER);
+
+		if( $ARGV[$i] ) {
+		    $force_host = 1;
+
+		    if( $ARGV[$i] =~ /^[a-zA-Z]/ ) {
+			$ip = &find_ip($ARGV[$i]);
+		    } else {
+			$ip = $ARGV[$i];
+		    }
+		} else {
+		    &help();
+		}
+
+		if( $ip ) {
+		    &logg_actions("logging_openfw", "force close ($ip)");
+
+		    if($force_host) {
+			printf("Closing for host: $ARGV[$i]\n");
+		    } else {
+			printf("Closing for host: $name\n");
+		    }
+
+		    &write_db('rem', $dbh, $ip, '', 0, 1);
+		}
+
+		exit(0);
+	    } elsif( ($arg eq 'adm') || ($arg eq '--adm') || ($arg eq '-a') ) {
+		# Open a specified host for administration access...
+
+		# Get remote hostname...
+		$name  = &get_remote_name($USER);
+
+		if( $ARGV[$i] ) {
+		    $admin_host = 1;
+
+		    if( $ARGV[$i] =~ /^[a-zA-Z]/ ) {
+			$ip = &find_ip($ARGV[$i]);
+		    } else {
+			$ip = $ARGV[$i];
+		    }
+		} else {
+		    # Get the IP address...
+		    $ip = &find_ip($name);
+		}
+
+		# Check if the firewall is opened or closed...
+		if( &check_firewall($ip) ) {
+		    &logg_actions("logging_openfw", "closed (admin/$ip)");
+
+		    if($admin_host) {
+			printf("Closing for host: $ARGV[$i]\n");
+		    } else {
+			printf("Closing for host: $name\n");
+		    }
+
+		    &write_db('rem', $dbh, $ip, 'admin', 0, 1);
+		} else {
+		    &logg_actions("logging_openfw", "opened (admin/$ip)");
+
+		    if($admin_host) {
+			printf("Opening for host: $ARGV[$i]\n");
+		    } else {
+			printf("Opening for host: $name\n");
+		    }
+
+		    &write_db('add', $dbh, $ip, 'admin', 0, 1);
+		}
+
+		exit(0);
+	    } elsif( $arg =~ /^[a-zA-Z]/ ) {
+		$ip = &find_ip($ARGV[0]);
+
+		if( &check_firewall($ip) ) {
+		    &logg_actions("logging_openfw", "closed (admin/$ip)");
+
+		    printf("Closing for host: $ARGV[0]\n");
+
+		    &write_db('rem', $dbh, $ip, 'free', 0, 1);
+		} else {
+		    &logg_actions("logging_openfw", "opened ($ip)");
+
+		    printf("Opening for host: $ARGV[0]\n");
+
+		    &write_db('add', $dbh, $ip, 'free', 0, 1);
+		}
+	    } else {
+		&help();
+	    }
+	}
+    } else {
+	# Get remote hostname...
+	$name  = &get_remote_name($USER);
+
+	# Check if this computer belongs to a computer group...
+	$group = &check_group($name);
+
+	# Open or close the firewall for this group of hosts...
+	&fix_firewall($group);
+    }
+}
+
+# 
+# Initialization function..
+sub init {
+    $PROG="tcp_masq_openfw";
+
+    if( $conf_dir eq "\.\/confs" ) {
+	$CF_FILE="tcpquota.cf.debug";
+    } else {
+	$CF_FILE="tcpquota.cf";
+    }
+
+    &readconfig("$conf_dir/$CF_FILE",$PROG);
+}
+
+#
+# Find the remote address for the user starting program..
+sub get_remote_name {
+    local($name) = @_;
+    my($tty, $host, $i, $user_name, $user_host, $user_tty, $dummy);
+    my(%WHO) = ();
+
+    # Get the TTY we are sitting on...
+    open(TTY,"/usr/bin/tty|") || die "Can not open tty...";
+    $tty=<TTY>;
+    close(TTY);
+    chop($tty);
+    $tty=~s|^/.*/||;
+
+    # Read from '/usr/bin/w'
+    %WHO = &get_online();
+
+    # Get the remote hostname...
+    $i = 0;
+  loop: while($WHO{$i}) {
+      ($user_name, $user_host, $user_tty,  $dummy) = split(' ', $WHO{$i});
+      if( ($name eq $user_name) && ($tty eq $user_tty) ) {
+	  $host = $user_host;
+
+	  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	      die "Du har ingen remote host. Du sitter ju lokalt - Pucko!\n" if(! defined $host);
+	  } else {
+	      die "You do not have a remote host. You are sitting localy - Stupid!\n" if(! defined $host);
+	  }
+
+	  last loop;
+      }
+
+      $i++;
+  }
+
+    return($host);
+}
+
+#
+# Check which group of computers we belong to...
+sub check_group {
+    local($name) = @_;
+    my($group, $host, @groups, @hosts);
+
+    @groups = split(' ', $cf{'GROUPS'});
+    foreach $group (@groups) {
+	@hosts = split(' ', $cf{$group});
+	foreach $host (@hosts) {
+	    if($name =~ $host) {
+		return($group);
+	    }
+	}
+    }
+}
+
+#
+# Open or close the firewall for a group of computers...
+sub fix_firewall {
+    local($group) = @_;
+    my(@hosts, @OPEN, @CLOSE, $host, $ip);
+
+    if( $cf{$group} ) {
+	# Give the order to open or close the firewall to the daemon...
+	@hosts = split(' ', $cf{$group});
+	foreach $host (@hosts) {
+	    $ip = &find_ip($host);
+
+	    if( check_firewall($ip) ) {
+		&logg_actions("logging_openfw", "closed ($group/$ip)");
+		&write_db('rem', $dbh, $ip, 'free', 0, 0);
+
+		push(@CLOSE, $ip);
+	    } else {
+		&logg_actions("logging_openfw", "opened ($group/$ip)");
+		&write_db('add', $dbh, $ip, 'free', 0, 0);
+
+		push(@OPEN, $ip);
+	    }
+	}
+
+	# Wait for the aqnowlagement of the open or close...
+	if( $CLOSE[0] ) {
+	    foreach $host (@CLOSE) {
+		# Wait until the daemon have told the table that it is opened...
+		while(! &wait_for_masq($host, 'close') ) {
+		    sleep(2);
+		}
+		printf("Closing for host: $host\n");
+	    }
+	} elsif($OPEN[0]) {
+	    foreach $host (@OPEN) {
+		# Wait until the daemon have told the table that it is opened...
+		while(! &wait_for_masq($host, 'open') ) {
+		    sleep(2);
+		}
+		printf("Opening for host: $host\n");
+	    }
+	} else {
+	    printf("Hmmm.... strange...\n");
+	}
+    }
+}
+
+#
+# Check if this host is masqueraded...
+sub check_firewall {
+    local($ip) = @_;
+    my($exists, $line, $source);
+
+    # Get IP firewall forward rules
+    open(FIREWALL, "/proc/net/ip_forward") || die "Could not open '/proc/net/ip_forward', $1";
+    <FIREWALL>; #skip one line..
+    while(! eof(FIREWALL) ) {
+	$line = <FIREWALL>;
+
+	$source = (split(' ', $line))[0];
+	$source = (split('\/', $source))[0];
+	$source = &hex_to_ip($source);
+
+	if( $source eq $ip ) {
+	    $exists = 1;
+	}
+    }
+    close(FIREWALL);
+
+    return($exists);
+}
+
+#
+# Cycle through the firewall entries, double check that the host exists
+# in the masq table...
+sub list_firewall {
+    local($hostname) = @_;
+    my($dummy, $line, $source, $host, $name, $ip, $temp, $group, $print_all_hosts, $print_this_host);
+
+    if( $hostname ) {
+	$group = &check_group($hostname);
+	$print_all_hosts = 0;
+    } else  {
+	$print_all_hosts = 1;
+    }
+
+    # Get IP firewall forward rules
+    open(FIREWALL, "/proc/net/ip_forward") || die "Could not open '/proc/net/ip_forward', $1";
+    <FIREWALL>; #skip one line..
+    while(! eof(FIREWALL) ) {
+	$line = <FIREWALL>;
+	$print_this_host = 0;
+
+	$source = (split(' ', $line))[0];
+	$source = (split('\/', $source))[0];
+	$source = &hex_to_ip($source);
+
+	$host = &find_fqdn($source);
+
+	$sth = $dbh->query("select host,name from masq where host like '$source'");
+	($ip, $name, $dummy, $dummy, $dummy, $dummy, $dummy) = $sth->fetchrow;
+
+	$temp_host = (split('\.', $host))[0];
+	if( $hostname ) {
+	    # We are only interested of specified hosts...
+	    if( $cf{$group} ) {
+		@hosts = split(' ', $cf{$group});
+		foreach $temp_name (@hosts) {
+		    if( $temp_host eq $temp_name ) {
+			$print_this_host = 1;
+		    }
+		}
+	    }
+	}
+
+	if( $print_this_host || $print_all_hosts ) {
+	    printf("Host: %-20s ($source) ", $host);
+
+	    if( $ip ) {
+		if( $ip eq $source ) {
+		    if( $name eq 'free' ) {
+			printf("Opened for free...\n");
+		    } elsif( $name eq 'admin' ) {
+			printf("Opened for admin usage...\n");
+		    } else {
+			printf("Opened by $name...\n");
+		    }
+		} else {
+		    printf("Does NOT exists in the database...\n");
+
+		    # Here we should remove any entry about this host...
+		}
+	    } else {
+		printf("Does NOT exists in the database...\n");
+
+		# Here we should remove any entry about this host...
+	    }
+	}
+    }
+    close(FIREWALL);
+}
+
+sub help {
+    print "Use: $0 COMMAND <host>\n";
+    print " Where COMMAND can be ether one of:\n";
+    print " log, --log          Output the logging database\n";
+    print " adm, --adm, -a      Open/Close the firewall for your host (or the specified host), for admin usage\n";
+    print " grp, --grp, -g      Open/Close the firewall for the specified host's group\n";
+    print " lst, --lst, -l      List the firewall\n";
+    print " cls, --cls, -c      Close the firewall (force)\n";
+    exit(0);
+}

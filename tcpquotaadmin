@@ -1,0 +1,875 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+# Allow or disallow users to tcp quota...
+# 
+# $Header: /usr/lib/cvs/root/tcpquota/tcpquotaadmin,v 1.32 1998/10/16 00:08:49 turbo Exp $
+#
+# $Author: turbo $
+#
+# $Id: tcpquotaadmin,v 1.32 1998/10/16 00:08:49 turbo Exp $
+#
+
+# Include some magic...
+use POSIX;
+use DBI;
+package main;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+
+$dummy = 0;
+$DEBUG = 0;
+
+&init();
+
+# Does we have any arguments?
+if( $ARGV[0] ) {
+    foreach $arg (@ARGV) {
+	if( $arg eq '--debug' ) {
+	    $DEBUG = 1;
+	} elsif( $arg eq '--help' || $arg eq '-h' || $arg eq '?' ) {
+	    &help();
+	    exit 0;
+	} elsif( $arg eq '--allow' || $arg eq '-a' ) {
+	    if( $ARGV[1] ) {
+		$username = $ARGV[1];
+	    } else {
+		print "Need a username to...\n";
+		exit(1);
+	    }
+
+	    # Add user to allowed database...
+	    &write_allowed($username,'add');
+
+	    exit(0);
+	} elsif( $arg eq '--disallow' || $arg eq '-d' ) {
+	    if( $ARGV[1] ) {
+		$username = $ARGV[1];
+	    } else {
+		print "Need a username to...\n";
+		exit(1);
+	    }
+
+	    # Remove user to allowed database...
+	    &logg_reason();
+	    &write_allowed($username,'rem');
+
+	    exit(0);
+	} elsif( $arg eq '--check' || $arg eq '-c' ) {
+	    if( $ARGV[1] ) {
+		# Check if user is allowed...
+		&read_allowed($ARGV[1]);
+
+		exit(0);
+	    } else {
+		print "Need a username to...\n";
+		exit(1);
+	    }
+	} elsif( $arg eq '--list' || $arg eq '-l' ) {
+	    # Check users allowed...
+	    &list_allowed();
+
+	    exit(0);
+	} elsif( $arg =~ /^[a-zA-Z]/ ) {
+	    # Most likley a user name here...
+	    $username = $arg;
+
+	    if(! $ARGV[1] ) {
+		print "Sorry, need '+money', '-money' or '=money' to...\n";
+		exit(1);
+	    } else {
+		$money = $ARGV[1];
+
+		if(      $ARGV[1] =~ /^\+/ ) {
+		    # Add quota points (money)...
+		    $money =~ s/\+//;
+		    $command = "add";
+		} elsif( $ARGV[1] =~ /^[0-9]/ ) {
+		    # Add quota points (money)...
+		    $command = "add";
+		} elsif( $ARGV[1] =~ /^\-/ ) {
+		    # Remove quota points (money)...
+		    $money =~ s/\-//;
+		    $command = "rem";
+		} elsif( $ARGV[1] =~ /^\=/ ) {
+		    # Set quota points...
+		    $money =~ s/\=//;
+		    $command = "set";
+		} else {
+		    print "Duuhhhh, what?\n";
+		    exit(1);
+		}
+
+		# 600 points => 1 minute => 1 swedish crown
+		$quota = $money * 600;
+
+		&list_quota($username);
+		&write_quota($username, $quota, $command );
+
+		exit(0);
+	    }
+	}
+    }
+} else {
+    # Nope... No debugging...
+    $DEBUG = 0;
+}
+
+sub init {
+    ######################################################################
+    #
+    # configuration parameters
+    #
+
+    $PROG="tcpquotaadmin";
+    $CF_FILE="tcpquota.cf";
+    $CF_FILE="tcpquota.cf.debug" if (defined $ENV{DEBUG} or $DEBUG);
+    %cf=(); # config array.
+    &readconfig("$conf_dir/$CF_FILE",$PROG);
+
+    ######################################################################
+    #
+    # initializing stuff
+    #
+
+    # Open up the database connection...
+    &open_sql_server();
+
+    # Who are running the program?
+    $USER = $ENV{'USER'};
+}
+
+######################################################################
+#
+# main loop
+#
+MAIN:
+while(1) {
+    # Clear the screen.
+    system( 'clear' );
+
+    # Print out the menu...
+    print "\n\n\n\n\n\n";
+    &print_menu();
+    print ":";
+
+    # Get the option...
+    chop( $menu = <STDIN> );
+    print "\n\n\n";
+
+    if( $menu eq 'q' || $menu eq 'Q' ) {
+	exit( 0 );
+    }
+
+    # -------------------------------------------
+    if( $menu == 1 ) {
+	# Allow user quota...
+
+	print "Enter username to allow: ";
+	chop( $username = <STDIN> );
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	&write_allowed($username,'add');
+    }
+
+    # -------------------------------------------
+    if( $menu == 2 ) {
+	# Dissallow user quota...
+
+	print "Enter username to remove: ";
+	chop( $username = <STDIN> );
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	&logg_reason();
+
+	&write_allowed($username,'rem');
+    }
+
+    # -------------------------------------------
+    if( $menu == 3 ) {
+	# Check user quota...
+
+	print "Enter username to check <RETURN=all>: ";
+	chop( $username = <STDIN>);
+
+	if($username) {
+	    &read_allowed($username);
+	} else {
+	    &list_allowed();
+	}
+    }
+
+    # -------------------------------------------
+    if( $menu == 4 ) {
+	# Add quota points...
+
+	print "Enter username to add quota to: ";
+	chop( $username = <STDIN>);
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	&list_quota($username);
+
+	print "Enter money the user have payed: ";
+	chop( $money = <STDIN> );
+
+        # 600 points => 1 minute => 1 swedish crown
+        $quota = $money * 600;
+
+	if( !$quota ) {
+	    next MAIN;
+	}
+
+	&write_quota($username, $quota, "add" );
+    }
+
+    # -------------------------------------------
+    if( $menu == 5 ) {
+	# Remove quota points...
+
+	print "Enter username to remove quota for: ";
+	chop( $username = <STDIN> );
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	&list_quota($username);
+
+	print "Enter money to remove from the user: ";
+	chop( $money = <STDIN> );
+
+        # 600 points => 1 minute => 1 swedish crown
+        $quota = $money * 600;
+
+	if( !$quota ) {
+	    next MAIN;
+	}
+
+	&write_quota($username, $quota, "rem" );
+    }
+
+    # -------------------------------------------
+    if( $menu == 6 ) {
+	# Set quota points...
+
+	print "Enter username to set quota for: ";
+	chop( $username = <STDIN> );
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	print "Enter points to set: ";
+	chop( $quota = <STDIN> );
+	if( !$quota ) {
+	    next MAIN;
+	}
+
+	&write_quota($username, $quota, "set" );
+    }
+
+    # -------------------------------------------
+    if( $menu == 7 ) {
+	# Remove user from database...
+
+	print "Warning, logging enabled, make sure you have a reason for this...\n\n";
+
+	print "Enter username to remove: ";
+	chop( $username = <STDIN> );
+	if( !$username ) {
+	    next MAIN;
+	}
+
+	print "Please enter the reason why the user is removed: ";
+	chop( $reason = <STDIN> );
+
+	open(LOG, ">>$cf{'LOGFILE'}")
+	    || die( "Could not open the log file...\n" );
+	print LOG "$USER removed user `$username', because:\n";
+	print LOG "$reason\n";
+	print LOG "-----------\n";
+	close( LOG );
+
+	&delete_user($username);
+    }
+
+    # -------------------------------------------
+    if( $menu == 8 ) {
+	# Check quota points...
+
+	print "Enter username to check <RETURN=all>: ";
+	chop( $username = <STDIN> );
+
+	&list_quota($username);
+    }
+
+    # -------------------------------------------
+    if( $menu == 0 ) {
+	# Quit...
+
+	exit( 0 );
+    }
+
+    print "continue [C/q]: ";
+    chop( $getit = <STDIN> );
+
+    if( $getit ) {
+	if( $getit eq 'q' || $getit eq 'Q' ) {
+	    exit( 0 );
+	} else {
+	    next MAIN;
+	}
+    }
+}
+
+
+######################################################################
+#              L I S T / R E A D  F U N C T I O N S                  #
+######################################################################
+
+
+######################################################################
+#
+# read_allowed( $user )
+#
+# Check if the user is in the database...
+#
+sub read_allowed {
+    local($user) = @_;
+
+    # Query the database.
+    $sth = $dbh->prepare("select * from allowed where name like '$user'");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    ($name) = $sth->fetchrow_array;
+
+    if( $name ) {
+	# User is allowed...
+	print "User '$user' is allowed...\n";
+    } else {
+	# User is not allowed...
+	print "User '$user' is NOT allowed...\n";
+    }
+}
+
+######################################################################
+#
+# list_allowed()
+#
+# Find out what tables exist in the database...
+#
+sub list_allowed {
+    local($user);
+    local($number) = 0;
+
+    # Query the database.
+    $sth = $dbh->prepare("select * from allowed");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    # print out the leading info lines.
+    print "\n";
+    print "The following users have access to use the tcp link...\n";
+
+    while( $user = $sth->fetchrow_array ) {
+	$number++;
+	print "$user\n";
+    }
+
+    print "\n\nNumber of users allowed: $number\n";
+}
+
+######################################################################
+#
+# list_quota($username)
+#
+# Find out what tables exist in the database...
+#
+sub list_quota {
+    local($username) = @_;
+
+    if( $username eq "" ) {
+	# Query the database.
+	$sth = $dbh->prepare("select * from tcptab");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+
+	while( ($user,$sec) = $sth->fetchrow_array ) {
+	    if($user) {
+		$cost = &calculate_cost( $sec );
+
+		printf("%-10s %9d (%5d kronor)\n", $user, $sec, $cost);
+	    }
+	}
+    } else {
+	# Query the database.
+	$sth = $dbh->prepare("select * from tcptab where name like '$username'");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+
+	($user,$sec) = $sth->fetchrow_array;
+	if($user) {
+	    $cost = &calculate_cost( $sec );
+
+	    printf("%-10s %9d (%5d kronor)\n", $user, $sec, $cost);
+	} else {
+	    print "User does not exist in database...\n";
+	}
+    }
+}
+
+######################################################################
+#
+# read_quota( $user )
+#
+# Check if the user is in the database...
+#
+sub read_quota {
+    local($user) = @_;
+
+    # Query the database.
+    $sth = $dbh->prepare("select * from tcptab where name like '$user'");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    ($dummy,$sec) = $sth->fetchrow_array;
+    if( $sec ) {
+	$cost = &calculate_cost($sec);
+	print "$user owes $cost.\n\n";
+    } else {
+	# the user does not have any quota...
+	print "$user have not accumulated any tcp quota...\n";
+    }
+}
+
+
+######################################################################
+#            W R I T E / U P D A T E  F U N C T I O N S              #
+######################################################################
+
+
+######################################################################
+#
+# write_allowed( $user )
+#
+# Add the user to the database...
+#
+sub write_allowed {
+    local($user,$action) = @_;
+    my($query);
+
+    # Add the user in the allowed database...
+    if( $action eq 'add' ) {
+	if( &check_exists($user) ) {
+	    $query = "insert into allowed (name) values ('$user')";
+	} else {
+	    printf("User does not exists in the system...\n");
+	    return(1);
+	}
+    } else {
+	$query = "delete from allowed where name like '$user'";
+    }
+    $sth   = $dbh->prepare($query);
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    # Add 0 in the quota database (if he/she doesn't exist there already)
+    if( $action eq 'add' ) {
+	# Check if the user already exist in the database...
+	$sth = $dbh->prepare("select * from tcptab where name like '$user'");
+	$sth->execute || print "Could not execute query: $sth->errstr";
+
+	($dummy,$sec) = $sth->fetchrow_array;
+
+	if(!$sec) {
+	    $sth   = $dbh->prepare("insert into tcptab (name,quota) values ('$user',0)");
+	    $sth->execute || die "Could not execute query: $sth->errstr";
+	}
+    }
+
+    # Print some info about the actions...
+    if( $action eq 'add' ) {
+	print "Added user $user\n";
+    } else {
+	print "Removed user $user\n";
+    }
+
+    &logg_actions("logging", "$action allow for user $user");
+}
+
+######################################################################
+#
+# $total_quota = write_quota( $user, $add_quota, $command )
+#
+# Write the quota for a user in the data base
+#
+sub write_quota {
+    local($user, $quota, $command) = @_;
+    local($old, $total);
+
+    if(! &check_exists($user) ) {
+	printf("User does not exists in the system...\n");
+	return(1);
+    }
+
+    $sth = $dbh->prepare("select * from tcptab where name like '$user'");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+    if(! $sth->rows() ) {
+	# New user...
+
+	# Insert the user and his/her quota in the quota database...
+	$sth   = $dbh->prepare("insert into tcptab (name,quota) values ('$user',$quota)");
+	$sth->execute || print "Could not execute query: $sth->errstr";
+	printf("Inserted new user '$user' to the quota database...\n");
+
+	# Check if the user already exist in the database...
+	$sth = $dbh->prepare("select * from tcptab where name like '$user'");
+	if( $sth->execute ) {
+	    # The user does not exists in the allowed database...
+	    # Insert the user and his/her quota in the allowed database...
+	    $sth   = $dbh->prepare("insert into allowed (name) values ('$user')");
+	    $sth->execute || print "Could not execute query: $sth->errstr";
+
+	    print "Inserted new user '$user' to the allow database...\n";
+	}
+
+	# Create the log string...
+	$string = sprintf("%5s for %-8s (     0 + %6s = %6s)", $quota, $user, $quota, $quota);
+
+	&logg_actions("logging", "$command quota $string");
+
+	$money = $quota / 600;
+	print "New money value for `$username': $money\n";
+	return(0);
+    } else {
+	# Known user...
+	local($old)   = 0;
+
+	# Add quota points...
+	if( $command eq 'add' ) {
+	    # Find the total quota...
+	    ($dummy,$old) = $sth->fetchrow_array;
+	    $total        = $old+$quota;
+	}
+
+	# Remove quota points...
+	if( $command eq 'rem' ) {
+	    # Find the total quota...
+	    ($dummy,$old) = $sth->fetchrow_array;
+	    if( !$old ) {
+		$old = 0;
+	    }
+
+	    $total        = $old-$quota;
+	}
+
+	# Set quota points...
+	if( $command eq 'set' ) {
+	    $total        = $quota;
+	}
+
+	# Update the quota value...
+	$sth   = $dbh->prepare("update tcptab set quota=$total where name like '$user'");
+	$sth->execute || print "Could not execute query: $sth->errstr";
+
+	# Double check...
+	$sth = $dbh->prepare("select * from tcptab where name like '$user'");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+
+	($user,$sec) = $sth->fetchrow_array;
+	if($user) {
+	    $cost = &calculate_cost( $sec );
+	} else {
+	    print "User does not exist in database...\n";
+	}
+
+	print "\nChanged quota for user `$user' (Money now '$cost')\n";
+
+	# Create the log string...
+	$string = sprintf("%-8s (%6s + %6s = %6s)", $user, $old, $quota, $total);
+
+	# Insert logg string and return the new quota value...
+	&logg_actions("logging", "$command quota $quota for $string");
+	return $total;
+    }
+}
+
+######################################################################
+#
+# delete_user( $username )
+#
+# Delete user from the allowed and the quota database...
+#
+sub delete_user {
+    local($username) = @_;
+
+    if( $username eq "all" ) {
+	print "Attemting to delete user $username from database... ";
+
+	# Query the database.
+	$sth = $dbh->prepare("select * from tcptab");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+
+	while( ($user,$dummy) = $sth->fetchrow_array ) {
+	    $sth   = $dbh->prepare("delete from tcptab where name like '$user'");
+	    $sth->execute || die "Could not execute query: $sth->errstr";
+
+	    print "Deleted user `$user'.\n";
+	    $user = "";
+	}
+    } else {
+	$sth   = $dbh->prepare("delete from tcptab where name like '$username'");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+	print "Deleted user '$username' from the quota database.\n";
+
+	$sth   = $dbh->prepare("delete from allowed where name like '$username'");
+	$sth->execute || die "Could not execute query: $sth->errstr";
+	print "Deleted user '$username' from the allow database.\n";
+    }
+
+    &logg_actions("logging", "del user  $username");
+}
+
+
+######################################################################
+#          M I S C  S U P P O R T  F U N C T I O N S                 #
+######################################################################
+
+######################################################################
+#
+# $value = check_exists( $user )
+#
+# Check if a user exists in the system
+#
+sub check_exists {
+    local($user) = @_;
+    my($uid);
+
+    $uid = getpwnam($user);
+    return($uid);
+}
+
+######################################################################
+#
+#
+sub print_menu {
+    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	print "\t\t\tMeny\n";
+	print "\t\t\t====\n\n";
+
+	print "\tTillata:\n";
+	print "\t  1. Tillat anvandare TCPQuota\n";
+	print "\t  2. Forbjud anvandare TCPQuota\n";
+	print "\t  3. Kolla vem som ar tillatna att anvanda linan\n\n";
+
+	print "\tPoang:\n";
+	print "\t  4. Addera pengar      (Anvandare har betalat in pengar)\n";
+	print "\t  5. Ta bort pengar     (Anvandare har strulat till det)\n";
+	print "\t  6. Satt poang         (Nagon har strulat till det, fixa...)\n\n";
+
+	print "\t  7. Ta bort anvandare fran databaserna\n";
+	print "\t  8. Kolla TCPQuota poang\n\n";
+	print "\t  q. Avsluta (Quit)\n";
+    } else {
+	print "\t\t\tMenu\n";
+	print "\t\t\t====\n\n";
+
+	print "\tAllowence:\n";
+	print "\t  1. Allow user TCPQuota\n";
+	print "\t  2. Dissallow user quota\n";
+	print "\t  3. Check who's allowed\n\n";
+
+	print "\tPoints:\n";
+	print "\t  4. Add money                  (User have made a deposition)\n";
+	print "\t  5. Remove money               (User have fucked up)\n";
+	print "\t  6. Set quota points           (Someone have fucked up, rectify...)\n\n";
+
+	print "\t  7. Remove user from databases (User have fucked up big time!!)\n";
+	print "\t  8. Check quota points\n\n";
+
+	print "\t  q. Quit\n";
+    }
+}
+
+sub help {
+    print "Usage: tcpquotaadmin [OPTIONS] [<user>] [-/+/= <points>]\n";
+    print "  Where OPTIONS could be:\n";
+    print "    --allow,    -a                Add user to allowed database.\n";
+    print "    --disallow, -d                Remove user from allowed database.\n";
+    print "    --check,    -c                Check if user is allowed.\n";
+    print "    --list,     -l                List users allowed.\n\n";
+    print "  example:\n";
+    print "    tcpquotaadmin --check gunnar  Check if gunnar is allowed to use the TCP link...\n";
+    print "    tcpquotaadmin gunnar +50      Add 50 crowns to gunnar...\n";
+    print "    tcpquotaadmin gunnar =50      Make sure gunnar have 50 crowns worth of TCPQuota...\n";
+}
+
+sub logg_reason {
+    my($reason);
+
+    print "Warning, logging enabled, make sure you have a reason for this...\n\n";
+
+    print "Please enter the reason why the user is not allowed: ";
+    chop( $reason = <STDIN> );
+
+    if( $reason eq '' ) {
+	die( "Can't continue without a reason...\n" );
+    }
+
+    open(LOG, ">>$cf{'LOGFILE'}")
+	|| die( "Could not open the log file...\n" );
+    print LOG "$USER disallowed user `$username', because:\n";
+    print LOG "$reason\n";
+    print LOG "-----------\n";
+    close( LOG );
+}
+
+#
+# 1996-09-24 turbo:  merged 'addtcpquota' and 'chktcpquota'
+# 1996-09-25 turbo:  some cleanup
+# 1996-09-13 turbo:  debugging does not change the real database, but in
+#                    'tcpquotadebug'.
+#
+# $Log: tcpquotaadmin,v $
+# Revision 1.32  1998/10/16 00:08:49  turbo
+# * Moved the revision logs to the end of the file.
+# * Found some missing ';'.
+#
+# Revision 1.31  1998/08/01 19:57:56  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.30  1998/05/24 19:45:29  turbo
+# I wonder how this managed to work at all... We first have to initialize a connect
+# to the mSQL database, then go through the arguments, saving the username in the
+# second position (ARGV[1]), then execute...
+#
+# Revision 1.29  1998/03/31 12:16:06  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.28  1998/03/17 19:13:21  turbo
+# More informative help messages (read 'examples')...
+#
+# Revision 1.27  1998/03/17 19:03:06  turbo
+# * Added the possibility to add/remove/set quota points etc from the CLI,
+#   instead of using the menu system...
+#   Usage example:  'tcpquotaadmin turbo +50' => Add 50 <money value> to turbo...
+# * Moved the init/config stuff, 'logg reason' and 'help' to it's own function,
+#   so that it can be called more that once...
+#
+# Revision 1.26  1998/03/14 23:02:58  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.25  1997/11/26 21:29:56  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.24  1997/11/26 19:55:56  turbo
+# Discovered a duplicate function here... 'logg_actions()', it is now moved
+# to the library...
+#
+# Revision 1.23  1997/11/04 14:53:33  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.22  1997/10/27 09:57:37  turbo
+# * Before and after adding/removing quota/money to a user, printout how much the
+#   user have right now, just for verification...
+# * When checking if a user exists in the system, check against the passwd file,
+#   not the group file (getpwnam instead of getgrnam)... *blush*
+#
+# Revision 1.21  1997/10/18 01:55:07  turbo
+# Before adding a user to any of the databases, check if he/she is a user on
+# the system...
+#
+# Revision 1.20  1997/10/18 01:00:40  turbo
+# * Fixed some 'EOL' when debugging...
+# * Create the logg string a little prittyer...
+#
+# Revision 1.19  1997/10/16 20:09:04  turbo
+# The check for 'Msql->errmsg' does not work, check if we have a row instead,
+# if we do, the user exists, other wise he/she does not...
+#
+# Revision 1.18  1997/10/16 18:34:23  turbo
+# * Removed the option 'Add user to database'... If a user have payed 100
+#   crowns (for example), and he/she does not exists in the allowed or the
+#   quota database, add him/her to the allowed database and set the quota
+#   to 100...
+# * If we choose to delete a user, delete him/her from both the databases,
+#   both the allowed and the quota database, that is...
+#
+# Revision 1.17  1997/10/16 17:47:33  turbo
+# No need to have so wide logg database, it have to fit on a paper...
+#
+# Revision 1.16  1997/10/16 17:27:50  turbo
+# Format the user/quota/old-quota/new-quota string propperly with sprintf()...
+# This makes for a prettyer logg database...
+#
+# Revision 1.15  1997/10/16 17:04:03  turbo
+# When adding a user to the database, or when adding quota for a user, add
+# to the logging how much the old and the new value is...
+#
+# Revision 1.14  1997/10/16 16:40:28  turbo
+# * A lot of buggs in the logging... It did not create the table incase it didn't
+#   exists. Also, it did not call the function if we are adding money to a user,
+#   since we have a return() before that... *blush*
+# * Keep quiet about Msql errors, we don't want to know...
+# * In the menu, we want to add/remove money, not points...
+#
+# Revision 1.13  1997/10/16 15:57:31  turbo
+# Ooopssideysy.... Forgot to get the date/time...
+#
+# Revision 1.12  1997/10/16 15:52:04  turbo
+# * Clean up of the source code, separate the write/update and read/list
+#   functions in there part of the code, easier to read and to find...
+# * Removed the function 'add_user()', the function 'write_quota()' does
+#   almost the exact same thing...
+# * Moved the function 'calculate_cost()' to the library file, no need to have
+#   it in all the files...
+# * Added the function 'logg_actions()' that loggs all write/update actions
+#   that is done on a user...
+#
+# Revision 1.11  1997/10/12 17:49:26  turbo
+# * Removed some fucked up header lines... *sigh*
+# * There was a bugg when checking TCPQuota for a specified user, but not
+#   when checking all... Even if a user had points, it did not translate to
+#   any money...
+#
+# Revision 1.10  1997/09/26 16:00:53  turbo
+# * Moved the menu to a separate function, 'print_menu()'... Will make the
+#   translation to different languages easier...
+# * Translated the menu to swedish...
+# * Removed the debug entries conserning the database and logfile... They are
+#   defined in the correct config file ('tcpquota.debug.cf').
+#
+# Revision 1.9  1997/08/17 17:29:13  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#

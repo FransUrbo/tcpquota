@@ -1,0 +1,274 @@
+.TH TCPQUOTA.CF 5 "TCPQuota Utilities" "FSF" \" -*- nroff -*-
+.SH NAME
+.B tcpquota.cf
+\- The configuration file for the TCPQuota programs.
+.SH SYNOPSIS
+/etc/tcpquota/tcpquota.cf
+.SH DESCRIPTION
+.B tcpquota.cf
+contains various pieces of information used by the
+TCPQuota programs. It is used by the daemon,
+.br
+.B tcpquotad(8)
+to find out to which mSQL database to store it's
+values in, and which users/hosts that is grouped
+together. It is used by most of the program suite,
+to find out
+.B where
+to find the mSQL server.
+.SS Variables
+.IP "PROTOCOL"
+What kind of network protocol are we using?
+Availible choises are
+.B PPP
+or
+.B ISDN.
+When using
+.IR PPP,
+it checks for a link by checking if there
+is a route on
+.IR ppp0.
+and if we are using
+.IR ISDN,
+it checks the file
+.B /dev/isdninfo
+which contains the status of the
+.IR ISDN
+channels.
+.PP
+.IP
+.B Example:
+.IR PROTOCOL=ISDN
+.IP "LOC_ADDR"
+Only used if we are using
+.IR ISDN
+as network protocol, ignored if we are using
+.IR PPP
+since when using PPP, one usually have a dynamic
+IP address...
+.br
+This is the address on the local side of the link
+(our address).
+.PP
+.IP
+.B Example:
+.IR LOC_ADDR=195.100.20.3
+.IP "REM_ADDR"
+Only used if we are using
+.IR ISDN
+as network protocol, ignored if we are using
+.IR PPP
+since when using PPP, one usually have a dynamic
+IP address...
+.br
+This is the address on the remote side of the link
+(the ISP's address).
+.PP
+.IP
+.B Example:
+.IR REM_ADDR=195.100.170.187
+.IP "SERVER"
+.br
+This is the machine/host which is running the mSQL
+server, could be IP address or FQDN address.
+.PP
+.IP
+.B Example:
+.IR SERVER=42.42.40.42
+.br
+.IP
+.B Example:
+.IR SERVER=stalin.ccw.se
+.IP "CHECK_REMOTE"
+Should we check if we have remote connects (if someone
+is connecting
+.B to
+us, via telnet/ssh/rlogin etc)?
+This is a boolean value, true/false, 1/0 or yes/no
+.PP
+.IP
+.B Example:
+.IR CHECK_REMOTE=yes
+.IP "CHECK_FTP"
+Should we check if we have remote connects (if someone
+is connecting
+.B to
+us, via FTP)?
+This is a boolean value, true/false, 1/0 or yes/no
+.PP
+.IP
+.B Example:
+.IR CHECK_FTP=yes
+.IP "CHECK_MASQ"
+Should we check any computers which is masqueraded?
+This is a boolean value, true/false, 1/0 or yes/no.
+.PP
+.IP
+.B Example:
+.IR CHECK_MASQ=yes
+.IP "GROUPS"
+.br
+With this variable, one can group computers (masqueraded)
+together, and open each group separate. For example, we have
+three rooms, with eight computers in each room and one teacher
+in each. If the teacher have a class in 'Using the Internet
+safely', and 'net time is included in the class fee, he/she
+wants to be able to open only that room for free 'net access.
+We then write (in the config file) the folloing:
+.PP
+.IP
+GROUPS=GROUP1 GROUP2 GROUP3
+.br
+GROUP1=machiavelli kaddaffi karadicz semin khomeini muboto chauchesko baptista
+.br
+GROUP2=idiamin saddam mao lenin adolf kim pinochet castro
+.br
+GROUP3=cleon indbur loris wienis asper stettin gilmer stannell
+.br
+.IP
+This would mean that if the teacher is sitting on khomeini, and runs the
+program
+.B openfw(8),
+He or she will open the following computers for free 'net access:
+.IR machiavelli, kaddaffi, karadicz, semin, khomeini, muboto, chauchesko
+and
+.IR baptista.
+.IP "USERS"
+.br
+This is the same as the
+.B GROUPS
+variable, only for user group allowed free 'net access
+.PP
+.IP
+.B Example:
+.IR "USERS=free turbo"
+.IP "LANGUAGE"
+What language we should use for the output. So far the programs have only
+been translated to Swedish and English (with a lot of spelling errors in
+the English version, I reckon :)
+.PP
+.IP
+.B Example:
+.IR LANGUAGE=svenska
+.IP "MONEY_VALUE"
+What type of money we are using.
+.PP
+.IP
+.B Example:
+.IR MONEY_VALUE=SEk
+.IP "LOGFILE"
+Where should we write our log file?
+.PP
+.IP
+.B Example:
+.IR LOGFILE=/var/log/tcpquotad.log
+.IP "PIDFILE"
+Where should we write our pid?
+.PP
+.IP
+.B Example:
+.IR PIDFILE=/var/run/tcpquota.pid
+.IP "NOQUOTAFILE"
+What file should we output to a user if he/she have gone below the minimum
+amount of allowed quota?
+.PP
+.IP
+.B Example:
+.IR NOQUOTAFILE=/etc/msgs/no-tcp-allowed
+.IP "MIN_QUOTA"
+What is the minimum amount of quota, before we 'cut the link' for the user?
+If the value is 0, then the user can not owe you anything, but if the value
+is, say, 200, then the user can owe you a maximum of 200 <MONEY_VALUE>.
+.PP
+.IP
+.B Example:
+.IR MIN_QUOTA=150
+.IP "RATE_QUOTA"
+How much does the one minute cost under the cheap tarrif. In Sweden
+we have two different tarrifs, high and low.
+.PP
+.IP
+.B Example:
+.IR RATE_QUOTA=0.1
+.IP "MIN_UID"
+Above what UID should we care about connects? If we set zero (0) here,
+even root have to pay... This may not a good option, since the mailer daemon,
+and the news daemon etc might do outside connects. We are working on a way
+to make each user pay for it's own mail connect, but we have yet to find out
+a way...
+.PP
+.IP
+.B Example:
+.IR MIN_UID=1000
+.IP "TICS"
+.br
+Number of tcpquotad passes an 'out' session can be unconnected to
+the database before tcpquotad gets tired of waiting and throws it
+out. It is modified in relation to 'tcpquotad.PERIOD'...
+.PP
+.IP
+.B Example:
+.IR TICS=10
+.IP "HIGH_START"
+.IP "HIGH_STOP"
+When does the low rate resp high rate begins and ends?
+(Hour of the day, in Sweden that is between 08.00 and
+18.00 weekdays, and low rate on weekends)
+.PP
+.IP
+.B Example:
+.IR HIGH_START=08
+.br
+.IP
+.B Example:
+.IR HIGH_TOP=18
+.IP "HIGH_RATE"
+.IP "LOW_RATE"
+Weight for each second under resp period.
+What is the difference between high and low rate?
+(In Sweden the high rate is twice as expensive as the
+low rate)
+.PP
+.IP
+.B Example:
+.IR HIGH_RATE=2
+.br
+.IP
+.B Example:
+.IR LOW_RATE=1
+.IP "tcpquotad.PERIOD"
+How often should the main daemon check for connections?
+We have discovered, that on a 386 one might need to have
+a number higher than 30 (seconds), so that the machine is
+not
+.B to
+heavily loaded, and on a Pentium, one can check every five
+seconds without any problems...
+.PP
+.IP
+.B Example:
+.IR tcpquotad.PERIOD=5
+.br
+.IP
+.B Example:
+.IR tcpquotad.PERIOD=30
+.IP "tcp_masq_openhost.PERIOD"
+How often should the 'log daemon'
+.B tcpquotatop (1)
+check for connections?
+.PP
+.IP
+.B Example:
+.IR tcp_masq_openhost.PERIOD=10
+.br
+.IP
+.B Example:
+.IR tcp_masq_openhost.PERIOD=30
+.SH FILES
+/etc/tcpquota/tcpquota.cf
+.SH SEE ALSO
+.B tcpquotad (8), tcpquotatop (1)
+.SH AUTHOR
+Turbo Fredriksson, <turbo@tripnet.se>
+.br
+Martin Budsjoe, <marbud@tripnet.se>

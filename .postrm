@@ -1,0 +1,100 @@
+#!/bin/sh
+#
+# postrm script for the Debian GNU/Linux tcpquota package
+#
+# Initial version written by Ian Murdock <imurdock@debian.org>
+# This version rewritten by Turbo Fredriksson <turbo@tripnet.se>
+
+if [ "$CFGDIR" == "" ]; then
+    CFGDIR=/etc/tcpquota
+fi
+
+remove_rcd() {
+    echo -n " Removing init links... "
+    update-rc.d -f tcpquota remove >/dev/null
+    echo "done."
+}
+
+case "$1" in
+    remove)
+	echo -n " Stopping the TCPQuota daemon ... "
+	/etc/init.d/tcpquotad stop
+	echo "done."
+
+	remove_rcd
+
+	echo -n " Removing PID file...   "
+	rm -f $DESTDIR/var/run/tcpquotad.pid  >/dev/null
+	echo "done."
+	;;
+    purge)
+	echo -n " Stopping the TCPQuota daemon ... "
+	/etc/init.d/tcpquotad stop > /dev/null
+	echo "done."
+
+	remove_rcd
+
+	# ----------------------
+
+	ENGINE=`grep ENGINE $CFGDIR/tcpquota.cf | awk -F= '{print $2}'`
+
+	if [ "$ENGINE" == "mSQL" ]; then
+	    if `relshow | grep tcpquota > /dev/null 2>&1`; then
+		echo " There is still databases configured. Do you want me to"
+		echo " remove them for you?"
+		read -p " Remove databases? [y/N]" s
+	    else
+		s=n
+	    fi
+
+	    if [ "$s" == "y" -o "$s" == "Y" ]; then
+		echo -n " Purging the TCPQuota/mSQL database... "
+		echo y | su msql -c "/usr/sbin/msqladmin drop tcpquota" \
+		    >/dev/null 2>&1
+		echo "done."
+
+		echo -n " Restarting the mSQL daemon...                 "
+		su msql -c "/usr/sbin/msqladmin reload" > /dev/null 2>&1
+		echo "done."
+	    fi
+	elif [ "$ENGINE" == "mysql" ]; then
+	    if `mysqlshow | grep tcpquota > /dev/null 2>&1`; then
+		echo " There is still databases configured. Do you want me to"
+		echo " remove them for you?"
+		read -p " Remove databases? [y/N]" s
+	    else
+		s=n
+	    fi
+
+	    if [ "$s" == "y" -o "$s" == "Y" ]; then
+		echo -n " Purging the TCPQuota/mySQL database... "
+		echo y | mysqladmin drop tcpquota > /dev/null 2>&1
+		echo "done."
+
+		echo -n " Restarting the mySQL daemon...                 "
+		mysqladmin reload > /dev/null 2>&1
+		echo "done."
+	    fi
+	else
+	    echo " Could not figure out which database engine you where using"
+	    echo " leaving any database behind..."
+	fi
+
+	echo -n " Removing PID and LOG files ... "
+	rm -f $DESTDIR/var/run/tcpquotad.pid  >/dev/null
+	rm -f $DESTDIR/var/log/tcpquotad.log* >/dev/null
+	echo "done."
+        ;;
+    upgrade)
+        exit 0
+        ;;
+    failed-upgrade|abort-install|abort-upgrade|disappear)
+        exit 0
+        ;;
+    *)
+        echo "postrm called with unknown argument \`$1\'" >&2
+        exit 0
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,6 @@
+We really should rewrite the daemon in C instead... It would probably make the
+execution faster... BUT, they (the perl people) are working on a perl compiler,
+so...
+
+When a user makes the line go up, he/she should 'gain' 2-4 extra tics...
+(In sweden it costs to a LOT!! :)

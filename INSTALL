@@ -1,0 +1,64 @@
+* If the program `tcpquotad' (or any other program in this package) complain
+  about `Can't find loadable object for module Msql in @INC ...', then
+  it can't find the Msql library. To rectify this, cd to `/usr/lib' and enter
+  the command: `ln -s ../local/lib/site_perl/i486-linux/auto/Msql/Msql.so',
+  hopfully that will fix the problem. If not, find the file `Msql.so' with
+  the help of `locate Msql.so', then make the link to the path that `locate'
+  tells you. If `locate' can't find the Msql library, then it means that you
+  don't have the msqlperl package properly installed.
+
+* If the program `tcpquotad' won't start, saying access denied, make sure
+  you can connect to the MSQL server on localhost. Try typing the following:
+  `msql -h localhost <database>', if that fail, you have not configured or
+  started MSQLd properly...
+
+  It could be helped if you set the environment variables 'MSQL_TCP_PORT'
+  and 'MSQL_UNIX_PORT'. See the manual page for 'msqld'...
+
+* These are the files included in the package, and what they do...
+  System commans:
+    tcpquotad		- Main daemon, should be started at boot time
+    tcpquota.init	- Boot script, starts the main daemon at boot time
+    verifytcpquotad	- Make sure that the daemon is up and running. Is run
+			  from the cron process...
+
+  Admin commands:
+    tcpquotaadmin	- Menu driven user/quota editor
+    addtcpquota		- Shell driven user/quota editor
+    chktcpquota		- Check how much quota a user (or one self) have gained
+			  so faar
+
+  Display commands:
+    tcpquotatop		- Show who is being debited right now, interactivly
+    topmasq		- Show who is masqueraded right now
+    topnet		- Show who is online and using the net right now
+
+  User commands:
+    tcp_masq_openhost	- Program that is to be run to access the Internet from
+			  BEHIND the firewall
+    tcp_masq_openfw	- Program to open the firewall for a group of computers
+    tcpperiod		- (Wonder what this actually does... Don't ask me, I
+			   don't know eather...)
+
+  All commands/programs take the argument '--help', '-h' or '?' for usage
+  information...
+
+  Config files:
+    tcpquota.cf		- Main config file for the programs
+    tcpquota.cf.debug	- Main config file for the programs, debug version
+    tcpquota.cron	- Script to rotate the log files
+    tcpquota.greet.english - Greeting text from 'openhost', in english
+    tcpquota.greet.svenska - Greeting text from 'openhost', in swedish
+    tcpquota.info.english  - Info text from 'openhost', in english
+    tcpquota.info.svenska  - Info text from 'openhost', in swedish
+    create_database.sql	- A SQL dump of the database
+
+  Lib files:
+    tcpquota.pl		- Some perl functions that is used by many programs
+    utmp_libc5.ph	- Perl header file to be able to read the utmp record,
+			  libc5 version (utmp file format differ)
+    utmp_libc6.ph	- Perl header file to be able to read the utmp record
+			  libc6 version (utmp file format differ)
+    cron_functions.pl	- What should we do every x second if we have a user
+			  online? POP mail? Ping a host? Just add your own perl
+			  code here, and restart the daemon...

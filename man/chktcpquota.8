@@ -1,0 +1,50 @@
+.TH CHKTCPQUOTA 8 "TCPQuota Utilities" "FSF" \" -*- nroff -*-
+.SH NAME
+.B chktcpquota
+\- Check the tcp quotas for the user(s) thus far.
+.SH SYNOPSIS
+.B chktcpquota
+.br
+OR:
+.br
+.B chktcpquota
+[options]
+.br
+.br
+.B chktcpquota
+{help, -h, --help}
+.br
+.B chktcpquota
+{user, -u, --user}
+.br
+.B chktcpquota
+{all, -a, --all}
+.br
+.B chktcpquota
+{log, -l, --log}
+.SH DESCRIPTION
+Outputs the quota value for a user. If called without
+arguments, outputs ones own value.
+.SH OPTIONS
+.TP
+.I "help, \-h, \-\-help"
+Print a usage message on standard output and exit
+successfully.
+.TP
+.I "user, \-u, \-\-user"
+Output the user running the programs own quota
+value.
+.TP
+.I "log, \-l, \-\-log"
+Outputs the log for the addition/removal of quota
+points.
+.TP
+.I "all, \-a, \-\-all"
+Outputs a list of all users that have accumulated
+TCP quota thus far.
+.SH SEE ALSO
+.BR tcpquotad (8)
+.SH AUTHOR
+Turbo Fredriksson, <turbo@tripnet.se>
+.br
+Martin Budsjoe, <marbud@tripnet.se>

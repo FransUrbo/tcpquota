@@ -1,0 +1,32 @@
+.TH TCP_MASQ_OPENFW 8 "TCPQuota Utilities" "FSF" \" -*- nroff -*-
+.SH NAME
+.B tcp_masq_openfw
+\- Open a set of hosts for free masquerading.
+.SH SYNOPSIS
+.B tcp_masq_openfw
+[options] host
+.br
+.B tcp_masq_openfw
+{help, -h, --help}
+.br
+.B tcp_masq_openfw
+{log, -l, --log}
+.SH DESCRIPTION
+Open the firewall for a set of computers/hosts, and writes
+a 'free' entry in the mSQL masquerading table telling that
+this host is free to use the TCP link.
+.SH OPTIONS
+.TP
+.I "help, \-h, \-\-help"
+Print a usage message on standard output and exit
+successfully.
+.TP
+.I "log, \-l, \-\-log"
+Outputs the log for the addition/removal of the
+masquerading entries.
+.SH FILES
+.I "/etc/tcpquota/tcpquota.cf"
+.SH AUTHOR
+Turbo Fredriksson, <turbo@tripnet.se>
+.br
+Martin Budsjoe, <marbud@tripnet.se>

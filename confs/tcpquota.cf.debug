@@ -1,0 +1,125 @@
+# Config file for the TCPQuota package
+
+#
+# Use 'isdn' or 'ppp'...
+PROTOCOL=isdn
+
+#
+# What is the IP address of the interface?
+# If using PROTOCOL=ppp, then use 'dynamic'
+# for the LOC_ADDR, and comment REM_ADDR.
+LOC_ADDR=195.100.170.187
+REM_ADDR=195.100.20.3
+
+#
+# What network/-s do we have as local?
+LOCALNET=42.42.0.0 192.168.0.0
+
+#
+# Msql interface.
+# Where is the databases running, and at what
+# port? (<address>:<port>). Do NOT forget the
+# port number.
+SERVER=localhost:4333
+
+# Which database engine should we use?
+ENGINE=mSQL
+
+#
+# Should we ever check connections FROM us?
+# Should we ever check connections TO US?
+# Should we ever check connections TO the FTP server?
+# Should we ever check masquerading?
+# 1 or 0 (Yes or No)
+CHECK_LOCAL=1
+CHECK_REMOTE=1
+CHECK_FTP=1
+CHECK_MASQ=1
+
+#
+# Computer groups
+# We could group computers, so that we can open the
+# firewall for a specific group of computers
+# (see top of 'tcp_masq_openfw' for more info)
+GROUPS=GROUP1 GROUP2 GROUP3
+GROUP1=machiavelli kaddaffi karadicz semin khomeini muboto chauchesko baptista
+GROUP2=idiamin saddam mao lenin adolf kim pinochet castro
+GROUP3=cleon indbur loris wienis asper stettin gilmer stannell
+
+#
+# User groups
+# We could group users to, so that we can have a group
+# of users allowed free surfing time...
+# (Does not need to be an existing system user)
+USERS=free admin rc564 monitorn
+
+#
+# What kind of language/moneys do we have?
+# english/svenska, SEK/Dollars etc...
+# The money value is _appended_ to the acctual
+# value, all accourding to swedish standard...
+LANGUAGE=svenska
+MONEY_VALUE=SEK
+
+#
+# Where do we want our logfile and PID file?
+LOGFILE=/var/log/tcpquotad.log
+PIDFILE=/var/run/tcpquotad.pid
+
+#
+# This is for the 'Ohhh, nooo, don't even think it'
+# file that is outputted...
+NOQUOTAFILE=/etc/msgs/no-tcp-allowed
+
+#
+# Minimum quota allowed. That is:
+# minimum <money value> / REAL_QUOTA * 60
+# At what (money) level should we cut the connection?
+MIN_QUOTA=0
+
+#
+# Cost per minute for low rate.
+RATE_QUOTA=0.1
+
+#
+# From what UID should we start checking...
+MIN_UID=500
+
+#
+# How often should we check for connects?
+tcpquotad.PERIOD=5
+tcp_masq_openhost.PERIOD=30
+
+#
+# How often should we check that the link is really up?
+# (Our ISDN card is very buggy, it crashes every now and then)
+VERIFY=500
+
+#
+# Number of tcpquotad passes an 'out' session can be unconnected to
+# the database before tcpquotad gets tired of waiting and throws it
+# out.
+# Is modified in relation to 'tcpquotad.PERIOD'...
+#
+# (Should be TICS >= (tcp_masq_openhost.PERIOD / tcpquiotad.PERIOD) + 2)
+TICS=10
+
+#
+# When does the low rate resp high rate begins and ends?
+# (Hour of the day, here between 08.00 and 18.00 is high rate)
+HIGH_START=08
+HIGH_STOP=18
+
+#
+# Weight for each second under resp period.
+# What is the difference between high and low rate?
+# (Here, the high rate is twice as expensive)
+HIGH_RATE=4
+LOW_RATE=2
+
+#
+# Between what hour's should the firewall be allowed to be opened
+# for usage by the free users?
+# (Hour of the day, here between 08.00 and 18.00)
+FW_START=08
+FW_STOP=18

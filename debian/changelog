@@ -1,0 +1,194 @@
+tcpquota (1.6.15-7) unstable; urgency=low
+
+  * Updated the dependecy on perl/perl5.
+  * Upgraded standards-version to 2.5.1
+  * Removed dependency to mysql-base | msql. The libdbd*-perl packages
+    do already depends on what is needed.
+  * Moved to main since libdbd-mysql-perl is in main now.
+  * Uploaded with full source because of this.
+    Closes: #41497
+
+ -- Turbo Fredriksson <turbo@debian.org>  Thu, 22 Jul 1999 12:14:30 +0200
+
+tcpquota (1.6.15-6) unstable; urgency=low, closes=28387
+
+  * Fixing postinst/config scripts. Ask for mySQL user and password, so
+    that the database can be created and the daemon reloaded corrected.
+  * Start tcpquotad without the `-w' switch to perl...
+  * Fixing bashism in post{inst|rm}.
+  * Fixing spelling errors in description.
+  * Wrong name of init script (tcpquotad, should be tcpquota).
+
+ -- Turbo Fredriksson <turbo@debian.org>  Mon, 12 Jul 1999 09:48:34 +0200
+
+tcpquota (1.6.15-5) unstable; urgency=low, closes=28387
+
+  * Fixing Bug#28387
+  
+ -- Turbo Fredriksson <turbo@tripnet.se>  Thu, 22 Oct 1998 06:09:42 -0700
+
+tcpquota (1.6.15-4) unstable; urgency=low
+
+  * Fixed bugs with 'prepate', instead of 'prepare'.
+  * More signal handlers, to try to find out why the daemon dies suddenly.
+  * Found some missing ';' in tcpquotaadmin.
+
+ -- Turbo Fredriksson <turbo@debian.org>  Thu, 15 Oct 1998 17:10:26 -0700
+
+tcpquota (1.6.15-3) unstable; urgency=low
+
+  * Fixed a little bug conserning the postinst. If we didn't say yes to the 
+    question 'Would you like to reconfigure', we don't restart the daemon.
+
+ -- Turbo Fredriksson <turbo@debian.org>  Fri, 18 Sep 1998 19:14:58 -0700
+
+tcpquota (1.6.15-2) unstable; urgency=low
+
+  * Found and corrected some bugs regarding uninitialized variables.
+  * Added a '--nofork' option to the daemon, to aid in debugging.
+  * Changed the Depends line... This hopfully catches everything we should
+    depend on...
+  * Missed a 'query' in the 'openhost' script. Should be 'prepare'.
+    Also try to center the 'Please press ENTER ...' and add a empty line
+    after this line, to make it more visible.
+  * Fixed a (serious) spelling error in the daemon... 'prepate', should be
+    'prepare'...                                            ^
+  * Problem with variables in the tcpquotaconfig script... Somethimes
+    I mix up the initialization of bash/sh variables and perl variables...
+  * Rewrote the post{rm,inst} a little. Mismatched `"' in postrm, and
+    added 'case "$1" in' in the postinst script, so that we don't try
+    to reconfigure a package we are about to remove/purge...
+  * Fixed 'newline' bug in the 'tcp_masq_openhost' script
+  * Fixed some 'ne/eq' bugs regarding the feching from the database
+    (also don't prepare the same statement twice, no need to).
+
+ -- Turbo Fredriksson <turbo@debian.org>  Fri, 18 Sep 1998 19:14:58 -0700
+
+tcpquota (1.6.15-1) unstable; urgency=low
+
+  * Moved to use 'libdbi-perl' instead of libmsql-perl, which means that
+    one can use mySQL (or perhaps even PostgreSQL) instead of mSQL which
+    is pretty slow...
+    .
+    This means different depends, different post{inst,rm} and some changes
+    in the config file.
+      New options:
+        ENGINE         => Which database engine should we use?
+        CHECK_LOCAL    => Should we ever check connections FROM us?
+        VERIFY         => How often should we check that the link is really up?
+      Changed options:
+        SERVER         => Now includes the port to the SQL server to.
+    .
+    Ask more questions in the postinst and tcpquotaconfig, so that the
+    system is more workable 'out-of-the-box'...
+  * Some bugfixes in the library.
+    Somehow, somewhere the who and w output changed. If we are running
+    in a screen or X, we don't get the hostname if local any more, just
+    '(:0:S.2)' for example...
+    .
+    Check the last three minutes worth of masquerading connects instead of
+    the last PERIOD sekonds..
+  * Fixed some bugs and added some options in the main daemon.
+    Support for a permanent link, no need to check any online and the like.
+    We can still use TCPQuota for logging connections... Yeah, right... :)
+    .
+    Support for checking ProFTPd connections... ProFTPd announces it's presence
+    a little different than wu-ftpd... This time I think I made it more
+    universal... Nock on wood... :)
+    .
+    Fixed (?) the problem with the disconnection from the SQL server.. Have
+    something to do with signals.
+    .
+    If the 'Net link was down, 'openhost' just sat there, doin' nothing. Fixed.
+  * In 'openhost', don't close the firewall or notify the user incase he/she
+    is on the 'free' list...
+  * Support both libc5 AND 6, just incase ([uw]tmp files differ, so does
+    the 'include' files...)
+  * More (better ?) online help.
+  * Use debhelper.
+
+ -- Turbo Fredriksson <turbo@debian.org>  Thu, 27 Aug 1998 03:20:47 -0700
+
+tcpquota (1.6.14-1) unstable; urgency=low
+
+  * NEW IN OPENFW:
+  * Added an option to force closing a specified host, and to open/close
+    a specified group of hosts, specifying just one of the hosts.
+  * Added the option to list the firewall entries.
+  .
+  * NEW IN OPENHOST:
+  * Better and (hopefully) more descriptive error messages.
+  * Tell the user if the daemon (or other script etc) have closed the
+    firewall for him/her, and exit cleanly.
+  .
+  * NEW IN TCPQUOTAD:
+  * Added support for more than one local network.
+  * Make _ABSOLUTELY_ sure that we find the correct user, checking against
+    our local domains.
+  * New signal handlers, USR[12] which turn on resp turn off debugging.
+  * Try to send a SMB message if we have to close the firewall to the
+    user in question.
+  * Fixed the bug that sometimes killed the daemon after killing a
+    non-allowed users processes.
+  .
+  * NEW IN TCPQUOTA.PL:
+  * Fixed the checking a connect against the local net (make sure it is
+    _NOT_ one of our own local networks).
+  * Made the libc5 and libc6 work independently, from the same code.
+    (We just recently switched to libc6 on our Internet server).
+  * Security fixed a open();
+  * If we can not find the IP number the user is coming from from the
+    UTMP file (which we often can not on a libc5 machine), try to find it
+    through a DNS lookup instead.
+  * Speeded up the database fetching quite a loot, by specifying the
+    exact entry. Added some new params to be able to do this, since they
+    where local variables.
+  * Officially added support for libc6 UTMP file.
+  .
+  * OTHER:
+  * Started hacking on a 'chkisdnlog', which give some status on the ISDN
+    usage.
+  * Improved the manuals a little... I do this when I have time over, but
+    I'm administring 30 machines, and teaching fulltime, so... :)
+  .
+  * BUG FIXES:
+  * Fixed some bugs in the 'openfw' script, concerning the parsing and
+    execution of the corresponding code.
+
+ -- Turbo Fredriksson <turbo@ccw.se>  Mon, 18 May 1998 23:50:28 +0200
+
+tcpquota (1.6.13-2) frozen unstable; urgency=low
+
+  * Forgot to change the call to one of the columns in the
+    masq table in the mSQL database
+  * Fixed the lintian bug, wrong-name-for-upstream-changelog
+  * Two new SIG handlers, USR1 and USR2 which turn on and off
+    debugging
+  * Better man page for the daemon, more info
+  * Some speedup of the opening/closing of the firewall
+  * More verbosity
+  * Make sure the 'openhost' script quits cleanly if someone/
+    something have closed the firewall for the opened host
+  .
+  * Added some empty SIG handlers to the daemon to see if
+    I can't find out _WHY_ it sometimes dies after killing
+    a  non-allowed users processes
+  * Added the feature to fore a close of a host
+  * Added the feature to extract a specific user's log entries
+  * Added the feature to open/close a specific group other
+    than the host/group your are comming from
+  * Added the feature to list the firewall entries and double
+    check that they exists in the database (also works on groups)
+
+ -- Turbo Fredriksson <turbo@debian.org>  Thr, 16 Apr 1998 21:39:54 +0200
+
+tcpquota (1.6.12-4) frozen unstable; urgency=low
+
+  * Fixed some lintian warnings
+  * Fixed bug #21034 'unfulfilled dependency'
+
+ -- Turbo Fredriksson <turbo@debian.org>  Sun, 15 Mar 1998 10:56:37 +0100
+
+# Local variables:
+# mode: debian-changelog
+# End:

@@ -1,0 +1,4 @@
+Below you can se how many connects out you have, and how many times
+the server discovers this, and debit your account... The screen is updated every
+30 second, but the server is checking more often. You can also se how many tcpquota
+seconds you have aquired, and what it costs.

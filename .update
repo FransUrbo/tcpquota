@@ -1,0 +1,24 @@
+#! /bin/sh
+
+TMP_FILE=`mktemp -q /tmp/$0.XXXXXX`
+if [ $? -ne 0 ]; then
+    echo "$0: Can't create temp file, exiting..."
+    exit 1
+fi
+
+# Get a dump of the current table...
+msqldump tcpquota masq > $TMP_FILE
+
+# Drop the current table...
+cat <<EOF | msql tcpquota > /dev/null
+drop table masq\g
+EOF
+
+# Change/Add a column with value...
+sed -e 's/count INT/counter INT/' \
+    -e 's/counter INT/counter INT, open INT/' \
+    < $TMP_FILE | msql tcpquota > /dev/null
+
+# Remove the temp file...
+rm -f $TMP_FILE
+

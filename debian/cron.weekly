@@ -1,0 +1,18 @@
+#! /bin/sh
+#
+# cron script to rotate tcpquota logs
+#
+# Written by Turbo Fredriksson <turbo@tripnet.se>
+
+cd /var/log
+
+/etc/init.d/tcpquotad stop
+
+for LOG in tcpquota.log tcpquotaadmin.log tcpquotad.log
+do
+    if [ -f $LOG ]; then
+	savelog -g adm -m 644 -u root -c 4 $LOG > /dev/null
+    fi
+done
+
+/etc/init.d/tcpquotad start

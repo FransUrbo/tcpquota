@@ -1,0 +1,2104 @@
+#!/usr/bin/perl
+
+######################################################################
+#
+# Logs all foreign tcp activity using '/proc/net/tcp'
+# Uses the msql-database 'tcpquota'.
+# 
+# TODO: rewrite in C (This have been around for a _VERY_ long time now... :)
+#       the first TCP connection should give 5 extra minutes (50 Ore)
+#
+# $Author: turbo $
+#
+# $Id: tcpquotad,v 1.131 1998/10/15 23:54:55 turbo Exp $
+
+use DBI;
+
+# Include some magic...
+use POSIX;
+use Net::Domain qw(hostdomain);
+use File::Find;
+use English;
+package main;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+require "$lib_dir/utmp.ph";
+require "$lib_dir/cron_functions.pl";
+
+# What is our version/revision?
+$VERSION = '$Revision: 1.131 $ ';
+
+# Is this a master or slave daemon?
+$MASTER_MODE = 1;
+
+# Should we fork?
+$NOFORK = 0;
+
+# Do we have any arguments?
+if( $ARGV[0] ) {
+    # Ohh yes.... Process it...
+
+    foreach $arg (@ARGV) {
+	if( $arg eq '--debug' ) {
+	    $DEBUG = 1;
+	    $CHECK_DEBUG = 1;
+        } elsif( $arg eq '--version' ) {
+            printf("tcpquotad, $VERSION\n");
+            exit 0;
+#	} elsif( $arg eq '--slave' ) {
+#	    $MASTER_MODE = 0;
+	} elsif( $arg eq '--nofork' ) {
+	    $NOFORK = 1;
+	} else {
+	    $DEBUG = 0;
+	    $CHECK_DEBUG = 0;
+	}
+
+	if( $arg eq '--help' || $arg eq '-h' || $arg eq '?' ) {
+	    print "\nUsage: tcpquotad [OPTION]\n";
+	    print "  Where OPTION could be:\n";
+	    print "    --debug   run the program in debug mode...\n";
+	    print "    --slave   run the program in slave mode (not finished)\n";
+	    print "    --nofork  don't detach from terminal (and do some debug output)\n";
+	    exit 0;
+	}
+    }
+} else {
+    # Nope... No debugging...
+    $DEBUG = 0;
+    $CHECK_DEBUG = 0;
+}
+
+# Get the configurations...
+&get_config();
+
+# initializing stuff
+&init();
+
+# A global dummy variable...
+$dummy   = "";
+$trigger = 0;
+
+# signal handlers
+$SIG{'HUP'}  = \&hup_handler;       # handle a SIGHUP  by reloading the configuration file
+$SIG{'TERM'} = \&term_handler;      # handle a SIGTERM by exiting cleanly
+$SIG{'INT'}  = \&int_handler;       # handle a SIGINT  by exiting cleanly
+$SIG{'QUIT'} = \&quit_handler;      # handle a SIGQUIT by exiting cleanly
+$SIG{'KILL'} = \&kill_handler;      # handle a SIGKILL by exiting cleanly
+$SIG{'USR1'} = \&usr1_handler;      # handle a SIGUSR1 by turning ON debugging
+$SIG{'USR2'} = \&usr2_handler;      # handle a SIGUSR2 by turning OFF debugging
+$SIG{'ABRT'} = \&abrt_handler;      # handle a SIGABRT (?)
+$SIG{'ALRM'} = \&alrm_handler;      # handle a SIGALRM (?)
+$SIG{'CHLD'} = \&chld_handler;      # handle a SIGCHLD (?)
+$SIG{'PIPE'} = \&pipe_handler;      # handle a SIGPIPE (?)
+$SIG{'__WARN__'} = \&warn_handler;  # called when a warning message is about to be printed.
+$SIG{'__DIE__'}  = \&die_handler;   # called when a fatal exception is about to be thrown.
+
+
+# Get the network address...
+$localnet = ""; # Just for perl...
+$localnet = $cf{'LOCALNET'};
+
+# Get our domainname...
+$DOMAIN_NAME = hostdomain();
+
+######################################################################
+#
+# proc: main loop
+#
+while(1) {
+    local($logstring, $tlogstring);
+    local($cur, $rate, $users_no, $got_line);
+
+    # These are the variables that keeps the track on number of users online.
+    $users_no = 0;
+
+    # If we are running as master server, check if we are online...
+    if( $MASTER_MODE ) {
+	# Lets check if the line is up before writing the quota file and log...
+	if( $cf{'PROTOCOL'} eq 'isdn' ) {
+	    $got_line = &check_online_isdn();
+	} elsif( $cf{'PROTOCOL'} eq 'ppp' ) {
+	    $got_line = &check_online_ppp();
+	} elsif( $cf{'PROTOCOL'} eq 'ethernet' ) {
+	    $got_line = 1;
+	} else {
+	    die "No protocol specified...\n";
+	}
+
+	# Should we open the firewall for a host/user?
+	&open_tha_firewall();
+    } else {
+	# We are running as slave server... We are always online...
+	$got_line = 1;
+    }
+
+    # Are we online and are we running as slave server?
+#   if( $got_line && !$MASTER_MODE ) {
+    if( $got_line ) {
+	# The link is up...
+	&logg(2, "=> The link is up...\n");
+
+	# Clear some variables..
+	@USER = ();
+
+	# =======================================================================
+	# ==========   C H E C K  L O C A L  C O N N E C T I O N S     ==========
+
+	# Get all local users and add them to our local userlist..
+	# Connects to or from the local host...
+	if( $cf{'CHECK_LOCAL'} || $cf{'CHECK_REMOTE'} ) {
+	    &check_localhost();
+	}
+
+	# =======================================================================
+	# ========== C H E C K  M A S Q U E R A D E D  M A C H I N E S ==========
+
+	# Get all masq users and add them to our local userlist..
+	if( $cf{'CHECK_MASQ'} ) {
+	    &check_masqueraded();
+	}
+
+	# =======================================================================
+	# ==========   C H E C K  U S E R S  O N  F T P  S E R V E R   ==========
+
+	# Check any connections we have to our FTP server...
+	if( $cf{'CHECK_FTP'} ) {
+	    &check_ftpd();
+	}
+
+	# =======================================================================
+	# ==========       P R O C E S S  D A T A  A Q U I R E D       ==========
+
+	# Remember how many users that is online...
+	$users_no = $#USER + 1;
+
+	&logg(1, "we have the following users online: '@USER'\n") if( $users_no );
+
+	# Process the data...
+	$logstring = "PROCESSING:";
+	$cur = 0;
+	local($totaltot) = 0;
+
+	foreach $username (@USER) {
+	    # We have user(s) online
+
+	    # ---------------------------
+
+	    # First do some 'cron' stuff, every VERIFY second...
+	    $trigger += $cf{'PERIOD'};
+	    if($got_link && ($trigger >= $cf{'VERIFY'}) ) {
+		# First zero the trigger variable, so that it can be used again...
+		$trigger = 0;
+
+		&verify_link();
+	    }
+
+	    # ---------------------------
+
+	    $cur++;
+
+	    # Print some info if debugging...
+	    $logstring .= " " . "'" . $username . "'";
+
+	    # Get the hour and week day.
+	    $rate = &check_rate();
+
+	    # Get the number of quota from the database.
+	    $sth = $dbh->prepare("select quota from tcptab where name = '$username'");
+	    if(! $sth->execute ) {
+		&logg(1,"SELECT: Could not query tcp table, $!\n");
+		&init_sql_server();
+	    }
+
+	    if( $sth->rows ) {
+		# hit..
+		$sec = $sth->fetchrow_array;
+	    } else {
+		# no hit.. new entry..
+		$sec = 0;
+	    }
+
+	    # Check for the hard quota limit.
+	    if( ($sec <= $cf{'MIN_QUOTA'}) && !&check_free_user($username) ) {
+		&logg(1,"KILL: $username, $sec BELOW minimum quota ($cf{'MIN_QUOTA'}).\n");
+		&kill_user( $username );
+
+		# Take next user...
+		next;
+	    }
+
+	    # Calculate how much to add.
+	    $add_quota = int( ($cf{'PERIOD'} * $rate) / $users_no) + 1;
+
+	    $total     = $sec - $add_quota;
+	    $totaltot += $add_quota;
+
+	    # extra debug loggning...
+	    $tlogstring = sprintf("user:  %-10s (%d/%d) = (%8d - %1d = %8d) rate:%d", 
+				  $username, $cur, $users_no, $sec, $add_quota, $total, $rate);
+
+	    &logg(1, $tlogstring . "\n");
+
+	    &write_quotas( $username, $total );
+	}			# End foreach( $username )
+
+	# Hmmm... 'Budda meck'...
+	&fix_period_or_something();
+
+	&logg(0, $logstring . "\n");
+	&logg(2, "=> == *** == *** == *** == *** == *** == END ==\n");
+    }				# End if( $got_line )
+
+    sleep( $cf{'PERIOD'} );
+}
+
+######################################################################
+#
+# proc: $total_quota = write_quotas($username, $add_quota)
+#
+# automagically update the quotas in the data base
+#
+# NOW! newquota is the total amount of qouta.. Not the "to be added".
+# This way we only need to ask Msql for the users current quota. /mb
+#
+sub write_quotas {
+    local($user, $newquota) = @_;
+    my($sth);
+
+    $sth = $dbh->prepare("select * from tcptab where name = '$user'");
+    if(! $sth->execute ) {
+	&logg(1, "Could not execute query: $sth->errstr");
+	return;
+    }
+
+    if($sth->rows == 0 ) {
+	# New user...
+
+	# Insert the user and his/her quota in the database...
+	$sth   = $dbh->prepare("insert into tcptab values ('$user',$newquota)");
+	$sth->execute || &logg(1,"INSERT: Could not insert new user '$user' (quota = $newquota), $!\n");
+    } else {
+	# Known user...
+	# Update the quota value...
+	$sth   = $dbh->prepare("update tcptab set quota=$newquota where name = '$user'");
+	$sth->execute || &logg(1,"UPDATE: Could not update table tcptab for user '$user' (quota = '$newquota'), $!\n");
+    }
+}
+
+######################################################################
+#
+# proc: init()
+#
+# initializing stuff
+#
+sub init {
+    if(! $DEBUG ) {
+# Complete Dissociation of Child from Parent
+#
+# ·   Open /dev/tty and use the TIOCNOTTY ioctl on it.  See
+#     the tty(4) manpage for details.
+#
+# ·   Change directory to /
+#
+# ·   Reopen STDIN, STDOUT, and STDERR so they're not
+#     connected to the old tty.
+#
+# ·   Background yourself like this:
+#
+#     fork && exit;
+
+	# Close the basic file handlers...
+	#close(STDIN); close(STDOUT); close(STDERR);
+
+	if(! $NOFORK ) {
+	    # this is a daemon, right?
+	    if(fork()) {
+		exit 0;
+	    }
+	}
+
+	# announce our precence to the world
+	open(PID, ">$cf{'PIDFILE'}")
+	    || &fel( "Could not open the pid file, $!\n" );
+	print PID $$ . "\n";
+	close PID;
+
+	# Initialize logging
+	open(LOG, ">>$cf{'LOGFILE'}")
+	    || die( "Could not open the $cf{'LOGFILE'} log file, $!\n" );
+
+	select(LOG);
+	$| = 1;  # flush the WRITEHANDLE after each command.
+    }
+
+    # Tell the log we are up and running...
+    &logg(1,"START: tcpquotad up and running ($VERSION)\n");
+
+    # Open up the msql connection...
+    &init_sql_server();
+
+    if( $cf{'PROTOCOL'} eq 'isdn' ) {
+	# Initialize the isdn variables...
+	&init_isdn_variables();
+
+	# Here we assume that we do not have any ISDN lines online...
+	$isdn_online = 0;
+    }
+
+    # Change the name we are running as...
+    $PROGRAM_NAME  = "TCPQuotad $cf{'PROTOCOL'}/$cf{'SERVER'}";
+    if( $MASTER_MODE ) {
+	$PROGRAM_NAME .= "/master";
+    } else {
+	$PROGRAM_NAME .= "/slave";
+    }
+    $PROGRAM_NAME .= "/$VERSION";
+
+    # Add some EOL's...
+    $PROGRAM_NAME .= "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    $PROGRAM_NAME .= "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+}
+
+######################################################################
+#
+# proc: init_sql_server()
+#
+# Open a connection to the SQL database...
+#
+sub init_sql_server {
+    undef( $dbh );
+
+    # Open up the database connection...
+    $dbh = DBI->connect("dbi:$cf{'ENGINE'}:tcpquota:$cf{'SERVER'}");
+
+    if(! $dbh ) {
+	printf(STDERR "Can't connect to database at $cf{'SERVER'}." );
+	return;
+    }
+
+    &logg(1, "START: tcpquota opened a connection to mSQL...\n");
+}
+
+######################################################################
+#
+# proc: init_isdn_variables()
+#
+# Initalize some variables needed by the ISDN online function...
+#
+sub init_isdn_variables {
+    my($line);
+
+    # Just incase we can't find the header file, use default value...
+    $ISDN_MAX_CHANNELS = 64;
+
+    # Find out how many channels we have support for...
+    if( open(ISDN_H, "/usr/include/linux/isdn.h") ) {
+	while(! eof(ISDN_H) ) {
+	    $line = <ISDN_H>;
+
+	    if( $line ) {
+		if( ($line =~ /^\#define/) && ($line =~ /ISDN_MAX_CHANNELS/) && (! $ISDN_MAX_CHANNELS) ) {
+		    $ISDN_MAX_CHANNELS = (split(' '))[2];
+		}
+	    }
+	}
+
+	close(ISDN_H);
+    }
+}
+
+######################################################################
+#
+# proc: $value = check_allowed($username)
+#
+# Check if a user is allowed...
+#
+sub check_allowed {
+    local($user_name, $verbose) = @_;
+    my($sth);
+
+    # If the user is 'free', the user is ok...
+    if(&check_free_user($user_name)) {
+	push(@USER, $user_name);
+	&logg(1, "$user_name is online from localhost (free)\n") if($verbose);
+	return;
+    }
+
+    $sth = $dbh->prepare("select name from allowed where name = '$user_name'");
+    $sth->execute || &logg(1, "Could not execute query: $sth->errstr");
+    if( $sth->rows ) {
+	# The user is ok, remember who he/she is...
+	push( @USER, $user_name );
+
+	&logg(1, "$user_name is online from localhost\n") if($verbose);
+    } else {
+	# The user is NOT ok, kill him/her...
+	&logg(1,"KILL: $user_name, not allowed..\n");
+	&kill_user( $user_name );
+    }
+}
+
+######################################################################
+#
+# proc: check_online_isdn()
+#
+# Check if we have a ISDN interface online...
+#
+# Returns:   0 if offline
+#            1 if online
+#            2 if calling
+#            3 if exclusive
+#
+sub check_online_isdn {
+    my($i, $chan, $online, $temp, $usage, $flags, $chmap);
+
+    # Here we assume that we do not have any ISDN lines online...
+    $isdn_online = 0;
+
+    # Open the ISDN info device...
+    if(! open(ISDN_I, "/dev/isdninfo") ) {
+	&logg(1, "ERROR: Can't open /dev/isdninfo, $!\n");
+	return( 0 );
+    }
+
+    # Get the six lines from the ISDN info device...
+    for( $i = 0; $i < 6; $i++ ) {
+	$temp = <ISDN_I>;
+	chomp($temp);
+
+	$line[$i] = substr($temp, 7);
+    }
+
+    # Close the device, we no longer need it...
+    close(ISDN_I);
+
+    # --------------------------------------------------------------------
+
+    # Chop up the info lines per channel...
+    for( $chan = 0; $chan < $ISDN_MAX_CHANNELS; $chan++ ) {
+#	$idmap = (split(' ', $line[0]))[$chan];  # Not intresting...
+	$chmap = (split(' ', $line[1]))[$chan];
+#	$drmap = (split(' ', $line[2]))[$chan];  # Not intresting...
+	$usage = (split(' ', $line[3]))[$chan];
+	$flags = (split(' ', $line[4]))[$chan];
+#	$phone = (split(' ', $line[5]))[$chan];  # Not intresting...
+
+	if(! $usage & 7 ) {
+	    # There is no connection...
+	
+	    if( $usage & 64 ) {
+		if(! $got_link ) {$got_link = 3;}
+	    } else {
+		if(! $got_link ) {$got_link = 0;}
+	    }
+	} else {
+	    if(! $flags eq '?' ) {
+		$online = ($flags & (1<<$chmap));
+	    }
+
+	    if( $online ) {
+		# Add this to the total number of ISDN lines online...
+		$isdn_online++;
+
+		if(! $got_link ) {$got_link = 1;}
+	    } else {
+		# Add this to the total number of ISDN lines online, it is practicaly online...
+		$isdn_online++;
+
+		if(! $got_link ) {$got_link = 2;}
+	    }
+	}
+    }
+
+    # Maby we should logg this? Hmmm? Naahhh, only when debugging the bugger! :)
+    &logg(2, "=> == *** == *** == *** == *** == *** == SRT ==\n");
+    &logg(2, "=> linkstatus: $got_link, lines: $isdn_online\n");
+
+    # Return the value here...
+    return( $got_link );
+}
+
+######################################################################
+#
+# proc: check_online_ppp()
+#
+# Check if we have a PPP interface online...
+#
+# Returns:   0 if offline
+#            1 if online
+#
+sub check_online_ppp {
+    my($line);
+
+    # read from '/proc/net/dev'
+    if(! open(DEVS, "/proc/net/dev") ) {
+	&logg("ERROR: Can't open '/proc/net/dev', $!\n");
+	return(1);  # Asume we are online, just incase...
+    }
+    
+    # throw away first and second line
+    <DEVS>; <DEVS>;
+
+    while(! eof(DEVS) ) {
+	$line = <DEVS>;
+
+	if( $line =~ /^ppp/ ) {
+	    # Got a ordinary PPP connect...
+	    close(DEVS);
+	    return( 1 );
+	}
+    }
+
+    # If we get here, we could not find a ppp device...
+    close(DEVS);
+    return( 0 );
+}
+
+######################################################################
+#
+# proc: check_localhost()
+#
+# Check if we have any users from localhost
+#
+sub check_localhost {
+    my(%NETSTAT, %WHO, @REMOTE) = ();
+    my($net_no, $loc, $rem, $uid, $for_name, $for_port, $uid);
+
+    # Get the connect to and from us, not counting any localnet comm...
+    %NETSTAT = &get_netstat();
+    &logg(2, "=> Got netstat...\n");
+
+    # Read from '/usr/bin/w'
+    %WHO     = &get_online();
+    &logg(2, "=> Got who...\n");
+
+    $net_no = 0;	
+    while($NETSTAT{$net_no}) {
+	&logg(2, "=> NET:  $NETSTAT{$net_no}\n");
+	$loc = (split(' ', $NETSTAT{$net_no}))[0];
+	$rem = (split(' ', $NETSTAT{$net_no}))[1];
+	$uid = (split(' ', $NETSTAT{$net_no}))[2];
+
+	# Get the 'Foreign Address' and 'TCP port'.
+	($for_name, $for_port) = split(':', $rem);
+
+	if( $uid >= $cf{'MIN_UID'} ) {
+	    # Only care about ordinary users...
+	    my($user);
+
+	    # Translate the numeric ID to the login name...
+	    $user = (getpwuid($uid))[0];
+	    &logg(2, "=> USER: $user ($uid/$cf{'MIN_UID'})\n");
+
+	    # ignore connections on our own Nets and ftp-data streams.
+	    if(!&check_localnet($for_name, &find_basenet()) && ($for_port != 20) ) {
+		# now, we know that user '$user_name' is using the modem
+
+		# check if he/she is allowed any quota...
+		&check_allowed($user, 1);
+	    }
+	} elsif( $uid eq '0' && $cf{'CHECK_REMOTE'} ) {
+	    # This is a connection by root, MIGHT be a connect to a telnetd/sshd etc...
+	    my($loc_name, $host, $remembered);
+
+	    # Get the 'Local Address' and 'TCP port'.
+	    ($loc_name, $dummy) = split(':', $loc);
+
+	    if( ($cf{'LOC_ADDR'} ne 'dynamic') && ($loc_name eq $cf{'LOC_ADDR'}) ) {
+		my($who_no, $for_host);
+
+		# Get the FQDN for the foreign host...
+		$for_host = &find_fqdn($for_name);
+		&logg(2, "=> We have a user from '$for_host' ($for_name)\n");
+
+		# Someone have connected to us, check who...
+		# We should realy check the utmp record instead...
+		$who_no = 0;
+		while($WHO{$who_no}) {
+		    my($user, $host, $addr, $host, $j);
+
+		    &logg(2, "=> who($who_no): $WHO{$who_no}\n");
+		    ($user, $host, $dummy, $addr) = split(' ', $WHO{$who_no});
+		    $who_no++;
+
+		    if( $host ) {
+			# Skip our own networks...
+			next if( &check_localnet($addr, &find_basenet()) );
+
+			if( ($host =~ $for_host) || ($addr eq $for_name) ) {
+			    # Nice... the user $user is logged in from the outside...
+
+			    $remembered = 0;
+			    for($j = 0; $REMOTE[$j]; $j++ ) {
+				if( $REMOTE[$j] eq $user ) {
+				    $remembered = 1;
+				}
+			    }
+
+			    if( !$remembered || !$REMOTE[0] ) {
+				# Remember this user...
+				push( @REMOTE, $user );
+
+				&logg(1, "$user is online from $host ($for_name)\n");
+				&check_allowed($user, 0);
+			    } else {
+				# User already accounted for...
+			    }
+			}
+		    }		# End 'We have a host'
+		}		# End 'while(WHO)'
+	    }
+	}			# End 'We have a root connect'
+
+	$net_no++;
+    }				# End 'while(NETSTAT)'...
+}
+
+######################################################################
+#
+# proc: check_masqueraded()
+#
+# Check if we have any masqueraded hosts, and/or users from the same...
+#
+sub check_masqueraded {
+    local($name, $sth, $sthrm, $host, $cnts, $tic, $count, $ret, $line);
+    local($src, $dst, $c_cnts, $free, $online,$open);
+
+    # Check what time it is.
+    local($sec,$min,$hour,$mday,$mon,$year,$day,$yday,$isdst, $rate_to_return);
+    ($sec,$min,$hour,$mday,$mon,$year,$day,$yday,$isdst) = localtime;
+
+    $online = 0; $counted_free = 0;
+
+    &logg(2, "=> ------------------------------\n");
+
+    $sth = $dbh->prepare("select * from masq");
+    $sth->execute || &logg(1,"SELECT: Could not fetch from masq table, $!\n");
+
+    # Fetch each hit..
+    while( ($host, $name, $cnts, $tic, $count, $open, $free) = $sth->fetchrow_array ) {
+	&logg(2, "=> MASQ 2: '$host, $name, $cnts, $tic, $count, $open, $free' from MASQ...\n");
+
+	# Return if the user in question is 'free'...
+	if(&check_free_user($name) && $free) {
+	    # Check that the firewall should be allowed to be open (Sun = 0; Sat = 6)
+	    if( (($hour >= $cf{'FW_STOP'}) && ($hour >= $cf{'FW_START'})) || (($day < 1) && ($day < 5)) ) {
+		&logg(1, "FREE: The firewall is not allowed to be open, auto closing ($host/$name)...\n");
+
+		$sthrm = $dbh->prepare("delete from masq where host = '$host'");
+		$sthrm->execute || &logg(1,"DELETE: Could not delete free user from '$host' from masq-table, $!\n");
+
+		$ret = &close_for_masq($host, 0);
+		&logg(1,"ERASE:  Could not erase free user from '$host' from masqerading table, $!\n") if ($ret / 256 != 0);
+
+		# Take next entry, no need to hang around here any more...
+		next;
+	    }
+
+	    if(! $counted_free) {
+		# Only count the user free once...
+		if( &get_masqueraded_online($host) ) {
+		    push( @USER, $name );
+
+		    $counted_free = 1;
+		    $online++;
+
+		    &logg(2,"=> user '$name' is free to surf ($online)...\n");
+		}
+
+		# Take next entry, no need to hang around here any more...
+		next;
+	    }
+	}
+
+	($src, $dst, $dummy, $c_cnts) = (0,0,0,0);
+
+	# ok.. nu skall vi kolla att tcp_masq_openhost håller tic över
+	# 0, annars antar vi att den samme ha dött, och tar bort 
+	# entryn från tabellen.
+	#
+	if( !$tic && $host && !$free && !&check_free_user($name) ) {
+	    # Only do this if it's a ordinary user...
+	    &logg(1,"TIC: $name -> $host have 0 in tic.. Lets remove it. \n");
+
+	    $sthrm = $dbh->prepare("delete from masq where host = '$host'");
+	    $sthrm->execute || &logg(1,"DELETE: Could not delete host '$host' from masq-table, $!\n");
+
+	    $ret = &close_for_masq($host, 0);
+	    &logg(1,"ERASE:  Could not erase host '$host' from masqerading table, $!\n") if ($ret / 256 != 0);
+
+	    $online--;
+	} elsif($tic && $host) {
+	    # ok.. räkna ner..
+	    $tic--;
+
+	    $sthrm = $dbh->prepare("update masq set tic = $tic where host = '$host'");
+	    $sthrm->execute || &logg(1,"UPDATE: Could not update tic for host '$host' ($tic), $!\n");
+
+	    &logg(2, "=> updated MASQ, set 'host = $host, tic  = $tic'...\n");
+
+	    $c_cnts = &get_masqueraded_online($host);
+
+	    # hur manga connects har vi just nu?
+	    $sthrm = $dbh->prepare("update masq set cnts = $c_cnts where host = '$host'");
+	    $sthrm->execute || &logg(1,"UPDATE: Could not update cnts '$c_cnts' for host '$host', $!\n");
+
+	    &logg(2, "=> updated MASQ, set 'host = $host, cnts = $c_cnts'...\n");
+
+	    if( $c_cnts ) {
+		$count++;
+		$sthrm = $dbh->prepare("update masq set counter = $count where host = '$host'");
+		$sthrm->execute || &logg(1,"UPDATE: Could not update count '$count' for host '$host', $!\n");
+
+		$online++;
+
+		push( @USER, $name );
+		$name = sprintf("%-10s", $name);
+		&logg(1,"$name masqueraded and active ($host)...\n");
+	    }
+	} elsif(!$host) {
+	    &logg(1, "ERROR: user '$name' does not seem to have a host entry in the masq table... Strange, $!\n");
+
+	    $sthrm = $dbh->prepare("delete from masq where host = ''");
+	    $sthrm->execute || &logg(1,"WARNING: Could not delete empty host entry from the masq-table.");
+	}
+    }
+
+    &logg(2, "=> Done with check_masqueraded()...\n");
+    &logg(2, "=> ------------------------------\n");
+
+    return($online);
+}
+
+######################################################################
+#
+# proc: check_ftpd()
+#
+# find users using the ftp server
+# 
+sub check_ftpd {
+    my($i, $uid, $user, $name, $cmd, $host, $ip, $net, @locnet);
+
+    &logg(2, "=> ------------------------------\n");
+
+    # Find each file in /proc which is a process dir...
+    $ps_number = 0;
+    find(\&ps_check_dir, "/proc");
+
+    $i = 0;
+    while($ps_line{$i}) {
+	$uid  = (split(' ', $ps_line{$i}))[0];
+	$pid  = (split(' ', $ps_line{$i}))[1];
+	$name = (split(' ', $ps_line{$i}))[2];
+	$i++;
+
+	if( $name =~ /ftpd/ ) {
+	    $user = (getpwuid($uid))[0];
+	    next if( $user =~ /^ftp/ );        # Ignore the FTP user...
+	    next if( $user =~ /^anonymous/ );  # Ignore the ANONYMOUS user...
+
+	    # Get the command line of the process...
+	    if( open(FILE, "/proc/$pid/cmdline") ) {
+		$cmd = <FILE>;
+		close(FILE);
+
+		# Get the hostname...
+		$host =  (split(':', $cmd))[0];
+		$host =~ s/^-//;
+
+		if( $host =~ /proftpd/ ) {
+		    # Other format than 'wu-ftp', resplit...
+		    # => proftpd: turbo - dinos.tripnet.se: /home/turbo: IDLE
+
+		    $host = (split(':', $cmd))[1];  
+		    # => turbo - dinos.tripnet.se
+		    # OR: just the proftpd process (then host is empty)...
+
+		    if( $host ) {
+			$host = (split(' ', $host))[2];
+			# => dinos.tripnet.se
+		    }
+		}
+
+		# Do we have a host name, or is this just the proftpd daemon process?
+		if( $host ) {
+		    # Get the IP number...
+		    $ip = &find_ip($host);
+
+		    &logg(2, "FTP: $host ($ip)\n");
+
+		    # Is it a connection from the outside?
+		    if( !&check_localnet($ip, &find_basenet()) && ($user ne 'root') ) {
+			&logg(1, "$user is online on FTPd from $host\n");
+			&check_allowed($user, 0);
+		    }
+		}
+	    }
+	}
+    }
+
+    &logg(2, "=> Done with check_ftpd()...\n");
+    &logg(2, "=> ------------------------------\n");
+}
+
+######################################################################
+#
+# proc: check_rate()
+#
+# find the hour and week day, so we know what rate to use...
+# 
+# Also check whether we have one ISDN online or more, if
+# using ISDN, that is...
+#
+sub check_rate {
+    # Check what time it is.
+    local($sec,$min,$hour,$mday,$mon,$year,$day,$yday,$isdst, $rate_to_return);
+    ($sec,$min,$hour,$mday,$mon,$year,$day,$yday,$isdst) = localtime;
+
+    # Sun = 0; Sat = 6;
+    if( ($day >= 1) && ($day <= 5) ) {
+	# A weekday...
+
+	# If between HIGH_START and HIGH_END, then use HIGH tax...
+	if( $hour >= $cf{'HIGH_START'} && $hour < $cf{'HIGH_STOP'}  ) {
+	    # high tax time...
+	    $rate_to_return = $cf{'HIGH_RATE'};
+	}
+	else {
+	    # low tax time...
+	    $rate_to_return = $cf{'LOW_RATE'};
+	}
+    }
+    else {
+	# Saturday or sunday...
+	$rate_to_return = $cf{'LOW_RATE'};
+    }
+
+    # Now we know the base rate, check the ISDN to...
+    if( ($cf{'PROTOCOL'} eq 'isdn') && $isdn_online ) {
+	# If we have two ISDN lines channels online, multiply with two,
+	# if we have three ISDN channels online, multiply with tree, simple!
+	$rate_to_return = $rate_to_return * $isdn_online;
+    }
+
+    # Return this value...
+    return( $rate_to_return );
+}
+
+######################################################################
+#
+# proc: fix_period_or_something()
+#
+# I have no idea what this really does, and why it does it...
+# it is a marbud thingie (he sucks :)...
+#
+sub fix_period_or_something {
+    local( $sth, $id, $period, $quota);
+
+    ($id, $period, $quota) = &getcurrent_period();
+    &logg(2,"=> got period $id $period $quota\n");
+
+    $quota += $totaltot;
+    &setcurrent_period($id, $period, $quota);
+    &logg(0,"=> updated period $period to $quota\n");
+}
+
+######################################################################
+#
+# proc: kill_user()
+#
+# kill a user, no mercy
+#
+sub kill_user {
+    local($user) = @_;
+    my($pid, $i, $uid, $uid_to_kill, $tmp, %line, @message);
+
+    if( $user eq 'root' ) {
+	&logg(1, "Can't kill root's processes!!! There must be a bugg somewhere!\n");
+	return;
+    }
+
+    # Fork the kill, so that we do not have to wait around...
+#    if( fork() ) {
+#	# Mother process, 'return to sender'...
+#	return;
+#    }
+
+    # Child process...
+
+    # Global variables, used by 'find()'...
+    $uid_to_kill = (getpwnam($user))[2];
+    %ps_line = (); %line = (); $ps_number = 0;
+
+    &logg(1,"THE KILLING FIELDS:\n");
+    &logg(1,"$user got the following processes going when he got the kill\n");
+
+    # Find each file in /proc which is a process dir...
+    find(\&ps_check_dir, "/proc");
+    $i = 0; $j = 0;
+    while($ps_line{$i}) {
+	$uid = (split(' ', $ps_line{$i}))[0];
+
+	if( $uid == $uid_to_kill ) {
+	    $line{$j} = $ps_line{$i};
+	    print "  $line{$j}";
+
+	    $j++;
+	}
+
+	$i++;
+    }
+
+    &logg(1,"$user END OF PROCESSES\n");
+
+    # Load the 'you are denied' file...
+    if( open(IN,$cf{'NOQUOTAFILE'}) ) {
+	# Load the message...
+	while(! eof(IN) ) {
+	    $tmp = <IN>;
+	    push(@message, $tmp);
+	}
+
+	# Close the file...
+	close(IN);
+    } else {
+	# Use a simple, non descriptive default message... :)
+	push(@message, "You are not allowed to use the Internet line...\n");
+    }
+
+    # Send a message to the user, telling him/her why they are killed...
+    # Send both to the terminal, and to winpopup, if we can...
+    &send_message($user, @message);
+
+    # kill all the users processes...
+    $i = 0;
+    while($line{$i}) {
+	$pid = (split(' ', $line{$i}))[1];
+	next if(! $pid );
+
+	if(! $DEBUG ) {
+	    kill 3, $pid;   # QUIT (quit)
+	    kill 9, $pid;   # KILL (non-catchable, non-ignorable kill)
+	    kill 15, $pid;  # TERM (software termination signal)
+	    &logg(1,"KILL: sent to '$user' processes '$pid'.\n");
+	} else {
+	    &logg(1,"KILL: don't killing proc '$pid', running in debug mode...\n");
+	}
+
+	$i++;
+    }
+
+    # Exit from this child process...
+#    exit 0;
+
+    # OK.. jag vet inte varför, men vi tappar kontaketn med msql
+    # här.. Något med signalerna att göra antar jag.. Ny koppling
+    # görs..
+    $sth = $dbh->prepare("select * from tcptab");
+    $sth->execute || &init_sql_server();
+}
+
+######################################################################
+#
+# proc: open_tha_firewall
+#
+# Should we open the firewall for a host/user?
+#
+sub open_tha_firewall {
+    my($sth, $host, $name, $cnts, $tic, $count, $free, $open);
+
+    $sth = $dbh->prepare("select * from masq");
+    if(! $sth->execute ) {
+	&logg(1,"SELECT: Could not fetch from masq table, reconnecting to database. $!\n");
+	&init_sql_server();
+
+	return;
+    }
+
+    # Fetch each hit..
+    while( ($host, $name, $cnts, $tic, $count,$open,$free) = $sth->fetchrow_array ) {
+	&logg(2, "=> MASQ 1: '$host, $name, $cnts, $tic, $count, $open, $free' from MASQ...\n");
+
+	if($open eq '2') {
+	    # Open this host...
+	    &open_for_masq($host, 0);
+
+	    # Set the variable to one, to indicate that it is now open...
+	    $sth = $dbh->prepare("update masq set open = 1 where host = '$host'");
+	    $sth->execute || &logg(1, "UPDATE: Could not update table masq for host '$host' (open = 1, was: $open), $!\n");
+
+	    return;
+	} elsif($open eq '3') {
+	    # Close this host...
+	    &close_for_masq($host, 0);
+
+	    # Set the variable to zero, to indicate that it is now closed...
+	    $sth = $dbh->prepare("update masq set open = 0 where host = '$host'");
+	    $sth->execute || &logg(1, "UPDATE: Could not update table masq for host '$host' (open = 0, was: $open), $!\n");
+
+	    return;
+	}
+    }
+}
+
+######################################################################
+#
+# proc: clean_firewall()
+#
+# Remove all entries from the masq table and masquerading table...
+#
+sub clean_firewall {
+    my($sth, $host, $name, $cnts, $tic, $count, $open, $free);
+
+    return if( $DEBUG );
+
+    $sth = $dbh->prepare("select * from masq");
+    if(! $sth->execute ) {
+	&logg(1,"SELECT: Could not fetch from masq table, reconnecting to database. $!\n");
+	&init_sql_server();
+
+	return;
+    }
+
+    # Fetch each hit..
+    while( ($host, $name, $cnts, $tic, $count, $open, $free) = $sth->fetchrow_array ) {
+	&logg(2, "=> CLEAN: '$host, $name, $cnts, $tic, $count, $open, $free' from MASQ...\n");
+
+	# Remove this entry from the database...
+	$sth = $dbh->prepare("delete from masq where host = '$host'");
+	$sth->execute || &logg(1, "ERASE: Could not erase host '$host' from the masq table, $!\n");
+
+	# Remove this entry from the masquerading list...
+	$ret = &close_for_masq($host, 0);
+	&logg(1,"ERASE:  Could not erase free user from '$host' from masqerading table, $!\n") if ($ret / 256 != 0);
+    }    
+}
+
+######################################################################
+#
+# proc: ps_check_dir(name)
+#
+# This is where tha real PS action takes place, open each 'status' file
+# in the '/proc/<pid/dir>/' directory, and find the UID and proc name...
+#
+sub ps_check_dir {
+    my($name, $uid, $file);
+
+    $file = $File::Find::name;
+
+    $file =~ s/\/proc\///;
+    if($file =~ /^[0-9]/) {
+	if( open(FILE, "/proc/$file/status") ) {
+	    # Get the name of the process...
+	    $name = <FILE>;
+	    chop($name);
+	    $name = (split(' ', $name))[1];
+
+	    # Skip some uninteresting lines...
+	    <FILE>; <FILE>; <FILE>;
+
+	    # Get the UID of the process...
+	    $uid = <FILE>;
+	    $uid = (split(' ', $uid))[2];
+	    close(FILE);
+
+	    $ps_line{$ps_number} = sprintf("%-6d %7d (%s)\n", $uid, $file, $name);
+	    $ps_number++;
+	}
+    }
+}
+
+######################################################################
+#
+# proc: int_handler()
+#
+# handle a SIGINT by exiting cleanly
+#
+sub int_handler {
+    &logg(1,"SIG:   got SIGINT (exiting cleanly)\n");
+
+    # Remove all entries from the masq table and masquerading table...
+    &clean_firewall();
+
+    if(! $DEBUG ) {
+	close(LOG);
+    }
+
+    exit 0;
+}
+
+
+######################################################################
+#
+# proc: hup_handler()
+#
+# handle a SIGHUP by reloading the configuration file...
+#
+sub hup_handler {
+    &logg(1,"SIG:   This is tcpquotad ($VERSION) getting SIGHUP (reloading configuration)\n");
+
+    # Get the configurations...
+    get_config();
+
+    $SIG{'HUP'} = \&hup_handler; # restore handler
+}
+
+
+######################################################################
+#
+# proc: term_handler()
+#
+# handle a SIGTERM by exiting cleanly
+#
+sub term_handler {
+    # Tell the log we are out a' here...
+    &logg(1,"SIG:   got SIGTERM (exiting cleanly, $VERSION)\n");
+
+    # Remove all entries from the masq table and masquerading table...
+    &clean_firewall();
+
+    if(! $DEBUG ) {
+	close(LOG);
+    }
+
+    exit 0;
+}
+
+######################################################################
+#
+# proc: quit_handler()
+#
+# handle a SIGQUIT by exiting cleanly
+#
+sub quit_handler {
+    # Tell the log we are out a' here...
+    &logg(1,"SIG:   got SIGQUIT (exiting cleanly, $VERSION)\n");
+
+    # Remove all entries from the masq table and masquerading table...
+    &clean_firewall();
+
+    if(! $DEBUG ) {
+	close(LOG);
+    }
+
+    exit 0;
+}
+
+######################################################################
+#
+# proc: kill_handler()
+#
+# handle a SIGKILL by exiting cleanly
+#
+sub kill_handler {
+    # Tell the log we are out a' here...
+    &logg(1,"SIG:   got SIGKILL (exiting cleanly, $VERSION)\n");
+
+    # Remove all entries from the masq table and masquerading table...
+    &clean_firewall();
+
+    if(! $DEBUG ) {
+	close(LOG);
+    }
+
+    exit 0;
+}
+
+######################################################################
+#
+# proc: alrm_handler()
+#
+# handle a SIGALRM
+#
+sub alrm_handler {
+    &logg(1,"SIG:   got SIGALRM (Don't exactly know what I'm supposed to do here...)\n");
+
+    $SIG{'ALRM'} = \&alrm_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: abrt_handler()
+#
+# handle a SIGABRT
+#
+sub abrt_handler {
+    &logg(1,"SIG:   got SIGABRT (Don't exactly know what I'm supposed to do here...)\n");
+
+    $SIG{'ABRT'} = \&abrt_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: chld_handler()
+#
+# handle a SIGCHLD
+#
+sub chld_handler {
+    &logg(1,"SIG:   got SIGCHLD (wait'ing)\n");
+
+    $SIG{'CHLD'} = \&chld_handler; # restore handler
+    wait;
+}
+
+######################################################################
+#
+# proc: pipe_handler()
+#
+# handle a SIGPIPE
+#
+sub pipe_handler {
+    &logg(1,"SIG:   got SIGPIPE (Don't exactly know what I'm supposed to do here...)\n");
+
+    $SIG{'PIPE'} = \&pipe_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: usr1_handler()
+#
+# handle a SIGUSR1 by turning ON debugging
+#
+sub usr1_handler {
+    # Tell the log we are to turn ON debugging...
+    &logg(1,"SIG:   got SIGUSR1 (turning ON debugging\n");
+
+    $DEBUG = 1;
+
+    $SIG{'USR1'} = \&usr1_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: usr2_handler()
+#
+# handle a SIGUSR2 by turning OFF debugging
+#
+sub usr2_handler {
+    # Tell the log we are to turn OFF debugging...
+    &logg(1,"SIG:   got SIGUSR2 (turning OFF debugging\n");
+
+    $DEBUG = 0;
+
+    $SIG{'USR2'} = \&usr2_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: die_handler()
+#
+# handle a __DIE__ by exiting cleanly
+#
+sub die_handler {
+    # Tell the log we are out a' here...
+    &logg(1,"SIG:   got __DIE__ (exiting cleanly, $VERSION)\n");
+
+    # Remove all entries from the masq table and masquerading table...
+    &clean_firewall();
+
+    if(! $DEBUG ) {
+	close(LOG);
+    }
+
+    exit 0;
+}
+
+######################################################################
+#
+# proc: warn_handler()
+#
+# handle a __WARN__
+#
+sub warn_handler {
+    &logg(1,"SIG:   got __WARN__ (CODE: $_[0])\n");
+
+    $SIG{'__WARN__'} = \&warn_handler; # restore handler
+}
+
+######################################################################
+#
+# proc: get_config()
+#
+# Open and parse the configuration file...
+#
+sub get_config {
+    $PROG="tcpquotad";
+
+    $CF_FILE="tcpquota.cf";
+
+    %cf=(); # config array.
+
+    &readconfig("$conf_dir/$CF_FILE",$PROG);
+}
+
+######################################################################
+#
+# proc: logg()
+#
+# Write to the loggfile...
+#
+# Level:  0 => No debugging
+#         1 => Debugg always
+#         2 => Only in debug mode
+#
+sub logg {
+    local($level, $msg) = @_;
+
+    if( $level > 0 || $DEBUG || $NOFORK ) {
+	my($string);
+	$string = "(" . &get_timestring() . ") " . $msg;
+
+	if(!$DEBUG && !$NOFORK) {
+            print LOG $string if( $level <= 1);
+        } else {
+	    print $string;
+	}
+    }
+}
+
+######################################################################
+#
+# proc: fel()
+#
+# Something really uggly have happened, write to the log why and then die
+#
+sub fel {
+    local($msg) = @_;
+
+    &logg(1,"===============> AIEEE: $msg <===============\n");
+    die $msg;
+}
+
+sub getcurrent_period() {
+  local($id,$period,$quota) = (-1,"START",0);
+  local($sth);
+
+  $sth = $dbh->prepare("select id from periodtab");
+  $sth->execute || &logg(1, "Could not execute query: $sth->errstr");
+  if( $sth->rows ) {
+    local($maxid)=0;
+    local($numrows);
+    $numrows = $sth->rows;
+
+    while( $numrows-- ) {
+      $id    = $sth->fetchrow_array;
+      $maxid = $id  if ($id > $maxid);
+    }
+
+    $sth = $dbh->prepare("select * from periodtab where id=$maxid");
+    $sth->execute || &logg(1, "Could not execute query: $sth->errstr");
+
+    ($id, $period, $quota) = $sth->fetchrow_array;
+  }
+
+  return( $id, $period, $quota);
+}
+
+sub setcurrent_period( $$$ ) {
+  local($id,$period,$quota)=@_;
+  local($sth);
+  
+  $sth=$dbh->prepare("update periodtab set quota = $quota where id = $id");
+  $sth->execute || &logg(1,"ERROR: Could not update period '$period' for ID '$id' (quota = '$quota'), $!\n");
+}
+		 
+
+sub newcurrent_period( $$$ ) {
+  local($id,$period,$quota)=@_;
+  local($sth);
+
+  $sth=$dbh->prepare("insert into periodtab values ($id,'$period',$quota)");
+  $sth->execute || &logg(1,"ERROR: Could not insert period '$period' for ID '$id' (quota = '$quota'), $!\n");
+}
+
+#
+# 1996-05-03 lars:   begun
+# 1996-07-31 lars:   removed the $ADDFILE handling
+# 1996-08-01 lars:   added SIGINT handling
+#                    added kill_user() function
+# 1996-09-02 turbo:  added the ignorance of connections to *.ccw.se & localhost
+#                    added the day and time check.
+# 1996-09-03 turbo:  fixed the buggs with the day and time check. :)
+#                    got the kill_user to work.
+#                    fixed the bugg with the initial connection.
+#                    added the maximum tcp quotas, shoot down user if above.
+#                    started to add the number of users online check.
+# 1996-09-04 turbo:  finished the 'users-online' check.
+#                    debugged the 'users-online' check.
+# 1996-09-05 turbo:  check if the link is up, before process net-data.
+# 1996-09-06 turbo:  implemented marbuds msql handling.
+#                    ignore the 'ftp-data' connection.
+# 1996-09-08 turbo:  started to add the masquerading check.
+# 1996-09-10 turbo:  some cleanup and optimizion.
+#                    removed all the 'open("date|")'.
+#                    got the msql stuff to work (FINALY!!)
+# 1996-09-13 turbo:  ignore the 'dcc-send' and 'dcc-get' connect.
+#                    added argument check '--debug' & '--help'.
+#                    moved the gid check to a sub func.
+#                    added some error check on the file opening.
+# 1996-09-15 turbo:  modified the check_user() func.
+#                    added some more error check's and terminate.
+# 1996-09-23 turbo:  some debugging.
+#                    added the total quota output when debugging.
+# 1996-09-29 turbo:  some debugging in the kill_user() func.
+#                    got the writing to work.
+# 1996-09-05 turbo:  debian have other params to 'netstat', Oooops
+# 1996-09-10 marbud: changed some names of variables in the 'netstat' readings.
+# 1996-09-13 turbo:  added the list of masqueraded users to the total users
+#                    online.
+#                    added some more informative output if debugging.
+# 1996-09-13 turbo:  debugging does not change the real database, but in
+#                    'tcpquotadebug'.
+# 1996-09-14 turbo:  removed the buggs introduced by marbud.
+# 1996-09-16 turbo:  finetuned the masquerading, and corrected some buggs.
+# 1996-09-17 turbo:  fixed some buggs, nothing serious.
+#
+
+#
+# 1997-01-18 marbud: Added CVS style rev desc.
+# 
+# $Header: /usr/lib/cvs/root/tcpquota/tcpquotad,v 1.131 1998/10/15 23:54:55 turbo Exp $
+#
+# $Log: tcpquotad,v $
+# Revision 1.131  1998/10/15 23:54:55  turbo
+# Found another 'prepate' instead of 'prepare'... *blush*
+#
+# Revision 1.130  1998/09/20 10:25:55  turbo
+# * Moved the CVS loggs to the end of the file
+# * Added the CVS Author/Id at the top
+# * Added signal handlers for SIGPIPE, __WARN__ and
+#   __DIE__ (the last two is some perl signals).
+#
+# Revision 1.129  1998/09/19 01:57:56  turbo
+# * Added a '--nofork' options, that make sure that we don't detach from the
+#   terminal, but still outputs all the debuggin information (to the terminal,
+#   instead of to the log file)...
+# * Rewrote the '--help' option a little, to conform to the other programs.
+#
+# Revision 1.128  1998/09/12 02:07:57  turbo
+# * Ouups... 'prepate' instead of 'prepare'... Fixed!
+#                  ^                    ^
+#
+# Revision 1.127  1998/08/02 18:03:22  turbo
+# * Removed the PORT variable, the port is in the SERVER variable...
+# * Added support for a permanent link... No need to check any online and the
+#   like...
+# * An IP address is not numeric, therefor do a 'eq' instead of a '=='... Hmmm...
+# * ProFTPd must have changed or something, do a regexp search for the word
+#   proftpd in the hostname, instead of an 'eq'... Now we will find atleast
+#   one ProFTPd daemon, probably because I run the daemon in standalone mode
+#   on papadoc... :)
+# * When we have killed a user, only reconnect to the SQL server if we can not
+#   select from tcptab... We don't ALWAYS lose the connection after a kill...
+# * Don't use the debug config file... Now, this have been going in and out
+#   a number of times... Wonder when I'm going to fix this once and for all... :)
+#
+# Revision 1.126  1998/08/01 19:57:57  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.125  1998/06/24 11:40:36  turbo
+# Just installed 'ProFTPd' instead of 'wu-ftp'... The proc file is of a little
+# other format, make sure we find the hostname where the user is comming from
+# (Have to re-split the line...)
+#
+# Revision 1.124  1998/06/12 14:44:53  turbo
+# * Log even the free user local connects...
+# * Some parenthesis missmatches...
+#
+# Revision 1.123  1998/05/24 21:12:02  turbo
+# * Spellchecks, empty lines gone, no sleep before we start killing processes...
+# * If we can not select * from a table, try to reinitiate the connection to the
+#   database engine, and return...
+#
+# Revision 1.122  1998/05/24 20:35:29  turbo
+# * Changed the ps output a little.
+# * Only output 'user is online from localhost' (in the 'check_allowed()' function)
+#   if we are calling the function from the 'check_localhost()' function (not from
+#   'check_ftpd()' or 'check_masqueraded()', no need to...)
+# * Some how the checking for connects to our host stopped working when I moved it
+#   to a separate function... Fixed.
+#
+# Revision 1.121  1998/05/24 19:12:06  turbo
+# * Started to add support for master/slave server. The master runs on the actual
+#   communication server and takes care of opening/closing the firewall, and the
+#   slave servers are running on every client...
+# * Show a ps output if we are running as master or slave...
+# * Moved the whole checking of local connects to a separate sub function,
+#   'check_localhost()' to clean up the main routine a little... Only execute
+#   this function if we want to check local connects OR remote connects.
+#
+# Revision 1.120  1998/05/24 16:44:03  turbo
+# Verify the link every VERIFY number of seconds...
+#
+# Revision 1.119  1998/05/22 13:59:51  turbo
+# Check if we should open the firewall for someone even if we do not have a
+# link...
+#
+# Revision 1.118  1998/05/14 17:07:52  turbo
+# * When we are checking for network connections, use our new and optimized
+#   functions, 'check_localnet()' and 'find_basenet()' instead of splitting,
+#   checking etc manually...
+# * Some more and prettier output when debugging.
+# * Do not change the TIC value if the user is allowed free access...
+#
+# Revision 1.117  1998/04/26 14:50:30  turbo
+# When we are checking for external connects, we should check
+# BOTH the foreign hostname and the foreing hostaddress. If
+# one of them is correct, we have found our user...
+#
+# Revision 1.116  1998/04/18 16:27:48  turbo
+# * Fixed a mixup of the signal handlers
+# * Moved the actual writing to the user if he/she
+#   is not allowed TCP quota to a separate function,
+#   'send_message()', which also tries to do a SMB
+#   write...
+# * Reconnect to the mSQL database after the kill,
+#   in the 'kill_user()' function...
+#
+# Revision 1.115  1998/04/15 19:39:10  turbo
+# New SIG handlers, USR1 and USR2, which turn on and off the debugging.
+#
+# Revision 1.114  1998/04/14 16:19:23  turbo
+# Added some new SIG handlers, SIGQUIT, SIGABRT and SIGKILL...
+# Maby now we can find out _WHERE_ and _WHY_ we die after
+# killing a non-allowed users processes...
+#
+# Revision 1.113  1998/04/13 10:40:12  turbo
+# * The new mSQL engine does not understand the column name 'count', so it had
+#   to be renamed to 'counter', make sure we select on the correct name...
+#
+# Revision 1.112  1998/04/04 13:45:16  turbo
+# We have to translate the host IP to host name before we check if the user
+# in question realy commes from the outside... This is a temporary fix...
+# I have to check if the FROM host is a IP address etc...
+#
+# Revision 1.111  1998/04/04 13:31:03  turbo
+# Use another config file if we are running in debug mode....
+#
+# Revision 1.110  1998/03/31 12:16:08  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.109  1998/03/29 18:20:33  turbo
+# * Initialize the trigger variable, so that perl does not complain...
+# * Only clean the firewall if not debugging...
+#
+# Revision 1.108  1998/03/23 10:43:46  turbo
+# Change the program name we are running as to:
+#   TCPQuota <protocol>/<mSQL server>/<VERSION>
+# Make's it a little cleaner in a ps listing... :)
+#
+# Revision 1.107  1998/03/21 23:15:48  turbo
+# We do the verification if and when the 'cron' stuff should take place _BEFORE_
+# we execute the function 'verify_link()'...
+#
+# Revision 1.106  1998/03/21 22:51:31  turbo
+# Moved the function 'verify_link()' to it's separate file, and added a
+# require line in the daemon, that way one can edit and change the behavior
+# on it much easier... (I wanted a way to do a finger on our mail delivery
+# system, it could as easily be TCPQuota that do that)...
+#
+# Revision 1.105  1998/03/14 23:02:58  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.104  1998/03/14 17:44:27  turbo
+# * When I changed (added a column to) the masq table in testings,
+#   the new column was created AFTER the 'free' column... This time
+#   it was created BEFORE... Very strange, had to swap the reading
+#   of the select's...
+# * When we have updated the status of the firewall for a specified
+#   host, return emediatly instead of getting next entry in the db..
+# * Instead of specifying each column when we do a select, get the
+#   whole table, no speed changes in eater case...
+# * Wrote a 'clean_firewall()' function that removes all entries
+#   from the masq table and closes the firewall, just in case...
+#   Called from the '{int|term}_handler()' functions.
+#
+# Revision 1.103  1998/03/13 18:32:41  turbo
+# * Changed some 'ERROR:' messages to the relevant and correct
+#   prefix, SELECT/INSERT etc...
+# * Before we check for local connections, check if there is
+#   any 'open' info in the masq table where:
+#     '3' means that it should be closed,
+#     '2' means that it should be opened,
+#     '1' that it is open,
+#     '0' that it is closed
+#
+#   Do all this in the new function 'open_tha_firewall()', which
+#   in turn calles '{open|close}_for_masq()'
+#
+# Revision 1.102  1998/03/13 15:01:20  turbo
+# * Sometimes TCPQuota looses connection with the mSQL server,
+#   make sure we re-connect if so.... (Try to do a 'select *
+#   from tcptab', if we get a response, everything okay)...
+#   Moved the acctual connection to a separate function
+#   which can be called anywhere...
+# * Comment out the fork'ing, it _STILL_ does not work!!!
+#
+# Revision 1.101  1998/03/13 14:36:38  turbo
+# * Added a SIGCHLD handler.
+# * Started to make the daemon 'free standing', ie
+#   it should open the firewall if some table/entry
+#   in the database say so (openfw/openhost writes
+#   to this table...)
+# * Started to fix the fork'ing just before we try
+#   to kill a non-allowed users processes...
+#
+# Revision 1.100  1998/03/12 14:36:56  turbo
+# Added support for SIGALRM... Nothing fancy, just tell the log file...
+#
+# Revision 1.99  1998/03/11 16:10:50  turbo
+# When we discover a user out of quota points, and the processes have been killed,
+# go to next user, don't just continue...
+#
+# Revision 1.98  1998/03/08 17:30:45  turbo
+# Finaly got the check for autoclosing the firewall if after FW_STOP
+# and before FW_START, also make sure we close it weekends, to work...
+#
+# Revision 1.97  1998/03/05 14:38:50  turbo
+# We should only allow the firewall to be open between 08.00 and 18.00
+# All other time, TCPQuotad auto closes it if it finds it open...
+# Check this at the same we check the masqueraded users and we find
+# the user 'free'...
+#
+# Revision 1.96  1998/03/05 13:08:54  turbo
+# When we get a SIGHUP, output the version number AND info that we are reloading
+# the configuration...
+#
+# Revision 1.95  1998/01/23 11:08:00  turbo
+# Only try to verify that the link is up by ping'ing the remote address _IF_
+# we have any users online, the ping zero's the 'time to be online' time...
+# Moved the verification code to a separate function, 'verify_link()' from
+# the 'check_online_isdn()' function...
+#
+# Revision 1.94  1998/01/18 01:12:21  turbo
+# Changed and fixed some buggs conserning the killing of a user's processes
+# if the user is not allowed any TCPQuota... Also fixed the bug that made the
+# daemon die when it tried to kill a process...
+#
+# Revision 1.93  1998/01/16 16:53:52  turbo
+# When I converted to newer perl, some buggs cropped up... *blush*
+# Don't verify that the link is realy up, if it is, it zeros the time since
+# last package sent... *jikes*
+#
+# Revision 1.92  1998/01/16 15:10:04  turbo
+# Perl changed the way it handled file handles... When we cyckle through the
+# file, make sure we only do that while ! eof.
+#
+# Revision 1.91  1998/01/16 12:36:28  turbo
+# Use the propper object variable name for the 'wanted()' function (the file
+# name).
+#
+# Revision 1.90  1998/01/07 15:29:24  turbo
+# Added some newlines to the logg output...
+#
+# Revision 1.89  1997/12/04 14:21:43  turbo
+# Added the VERSION (CVS Revision) variable, used when starting and when
+# calling with '--version' (exit's after that, as usual)...
+#
+# Revision 1.88  1997/12/04 14:09:46  turbo
+# * Got the fetching of the IP address from the utmp file to work, updated
+#   the WHO variable and it's splitting accordingly...
+# * When an 'open()' or 'query()' failes, logg the reason to with '$!' (stderr).
+#   Usually the daemon just dies, with no apparent reason, this should fix that...
+# * Make sure we could open the '/proc/<pid>/cmdline' before we try to read it...
+#   *blush* (We use that to find out if it is a FTP user online...)
+#
+# Revision 1.87  1997/12/03 14:31:12  turbo
+# * Variable name have been changed to protect the inocent...
+# * Spelling errors fixed...
+#
+# Revision 1.86  1997/12/02 21:42:22  turbo
+# Crapp update, no bigg deal...
+#
+# Revision 1.85  1997/12/02 16:51:24  turbo
+# * Removed any use of the FQDN, we really do not need it! We have the IP address,
+#   that's enough.
+# * Changes in the logging output when running in debug mode..
+# * Only check the FTP connects when running in debug mode (It's not completly
+#   functional yet).
+# * When (if?) checking for FTP connects, do _NOT_ count 'root' (when the
+#   connection is taking place, the ftpd is runned by root, and then changed
+#   to the relevant user)...
+# * Before going through the kill process, make absolutly sure we are not trying
+#   to kill a root process!!! Also fork this, so that we do not have to wait
+#   around here, while we are sending kills. This only works in debug mode though,
+#   since it is not completly functional yet...
+# * When opening a status file in the proc dir, make sure we could, before
+#   we continue reading!
+#
+# Revision 1.84  1997/12/01 19:58:24  turbo
+# * Some more logg output if debugging.
+# * Added the possibility to check incomming FTP traffic, user 'ftp/anon' is
+#   ignored however... Set 'FTP_CONNECTS=1' in the config file to use this
+#   feature.
+# * Some changes in the 'ps_check_dir()' (which corresponds to a '/bin/ps'),
+#   to be able to check FTP connects.
+# * Fix up of the kill_user() function... It did not work propperly, I must
+#   have 'optimezed away' the function... :D
+# * Logg level 0 is never, level 1 is always, level 2 is when running in debug
+#   mode...
+#
+# Revision 1.83  1997/12/01 14:21:12  turbo
+# When we startup, first write down the PID, then open and select the loggfile
+# for _ALL_ output!
+#
+# Revision 1.82  1997/12/01 13:47:14  turbo
+# * When calling 'logg()', use 2 as level if we are to output this when running in
+#   debug mode...
+# * Rewrote the 'logg()' function a little to reflect the above criteria...
+# * Do not call 'find_fqdn()', unless absolutly nessesary... Don't need to do
+#   that when we check for connect to us, we have the IP address, that's enough.
+# * Some cleanup in the logg strings...
+#
+# Revision 1.81  1997/11/26 21:29:56  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.80  1997/11/26 20:18:46  turbo
+# * Instead of using '/bin/ps' to find the users processes, check the directory
+#   '/proc' (any dir which starts with a number, is a process dir).
+# * Make sure, when we go through the netstat lines, that we use the correct
+#   variable, and that we count up the same...!!! *blush*
+#   Same goes for the 'who' lines...
+# * When going through the masqueraded lines, remember how many users we have
+#   masqueraded, and return the value...
+# * Some debugging output added...
+#
+# Revision 1.79  1997/11/20 22:18:18  turbo
+# * Moved the 'read from who/w' to a separate function, to ease the rewrite
+#   from reading from an external prog, to using the utmp file...
+# * Renamed some cryptic variable names...
+# * Localized some more variables (wonder how many that's left... :)
+# * If/When we check if we have a PPP connection, if we can't open the
+#   '/proc/net/dev', we asume that ppp is connected any way, just incase...
+# * Still havent found the bugg that writes a 'free' entry without any hostname...
+#
+# Revision 1.78  1997/11/19 22:47:28  turbo
+# Forgot to include the 'find.pl' file. The 'find()' function calls 'wanted()'
+#   for each hit, and 'wanted()' calls 'ps_check_dir(name)' for each hit, and
+#   opens the file '/proc/<pid>/status' to gather process name and UID of owner...
+#   Very strange, but atleast we don't have to use '/bin/ps'... Wonder if we
+#   gain anything by it... :)
+#
+# Revision 1.77  1997/11/19 22:36:53  turbo
+# Removed some TODO which is done:
+#   'use /proc/net/*'                                    (just done)
+#   'configuration file in /usr/local/etc/tcpquota.conf' (done a long time ago)
+#   'tell the users WHY he/she was kicked out'           (done a long time ago)
+#
+#   We still have one TODO left tough, 'rewrite in C'... :)
+#
+# Revision 1.76  1997/11/19 20:19:22  turbo
+# * Moved all the initializing code to a separate function, 'init()'.
+# * Localised some more variables.
+# * Instead of using '/bin/netstat -ten' to gather network connections, use
+#   our own function 'get_netstat()'...
+# * Cleaned up the connections from the firewall, much cleaner now...
+#   Instead of only checking the A-Net, do a check for the whole B- and C-Net
+#   also... This is not clean though, I might have to fix it better...
+# * No need for the huge funcion 'get_network_address()', there is a builtin
+#   perl function that does the same thing...
+# * Moved some function to the lib instead...
+# * If we are debugging, do not open the loggfile, but instead print to STDOUT,
+#   and do not try to close LOG when exiting...
+#
+# Revision 1.75  1997/11/17 16:05:28  turbo
+# * When started with the param '--debug', turn on CHECK_DEBUG to (which gives
+#   logg output about the masquerading check...
+# * Instead of checking if the current user under investigaton is 'free',
+#   do a check for the user group allowed free surf period...
+#   Added the function 'check_free_user()' which does this...
+# * Some buggs conserning the checking of the masqueraded host, must have
+#   sneaked in before the last revisition, because it did not care of users
+#   other than free... *blush*
+# * In the 'get_masqueraded_online()' function, return number of connects, not
+#   just 1 or 0... (sees now that it won't work anyway, so I have to fix it
+#   to the next revisition).
+# * Some better looking logging output...
+#
+# Revision 1.74  1997/11/17 10:53:06  turbo
+# * Changed the variables 'REMOTE_NAME to 'REM_ADDR', 'LOCAL_NAME' to
+#   'DOMAIN_NAME' and also added the variable 'LOC_ADDR' to better reflect
+#   the usage for the variable...
+# * If the ISDN line is up, double check, by ping'ing the remote host, to see
+#   if the link is really up... Our ISDN card crashes every now and then, it
+#   is up, but no packages can go through...
+# * If we have a free user, and we have already counted that, just take next
+#   line from the masq table, without storing the user (instead of go through
+#   the TIC check)...
+# * Found out that sometimes a user got a user entry in the masq table, but
+#   not a host entry, logg that... Strange, might be a bugg in the
+#   'tcp_masq_openhost' script...
+#
+# Revision 1.73  1997/11/16 23:49:44  turbo
+# * When debugging, do real action, just a lot more output...
+# * When reading from netstat/w, we did not get the lines properly, now we do...
+#
+# Revision 1.72  1997/11/16 22:49:52  turbo
+# Added some desctiptive information before/above each function, telling us
+# what the function in question does...
+#
+# Revision 1.71  1997/11/16 22:40:33  turbo
+# * Do not kill the user free, even if below MIN_QUOTA...
+# * Include the quota calculation (previous_quota - quota_to_remove = current_
+#   quota) in the loggfile...
+# * Do not return from 'write_quota()' if the user is 'free', we want to logg
+#   all costs for this user...
+# * Same goes for 'check_masqueraded()', only that we only check/log this
+#   user once...
+# * Moved the checking from 'ipfwadm -Ml' to a separate function (since it
+#   was needed elsewere in the code to, no need to have the same stuff in two
+#   places) called 'get_masqueraded_online()'
+#
+# Revision 1.70  1997/11/16 21:22:57  turbo
+# First get all lines from netstat, then from who, _THEN_ process the data
+# aquired... That way we dont have so many file's open...
+#
+# Revision 1.69  1997/11/13 07:30:05  turbo
+# Darn... When checking masqueraded users, and we have fetched the first row
+# in the masq table, if the user/line was 'free' we returned... _NOT_ very
+# smart... We should off course take the next user... *mega_blush*
+#
+# Revision 1.68  1997/11/11 15:11:59  turbo
+# If the user is 'free', do return as soon as possible from the following funcs:
+#   write_quotas
+#   check_allowed
+#   check_masqueraded
+#
+# Revision 1.67  1997/11/11 14:17:56  turbo
+# * Use specific paths to program's to avoid hacking...
+# * Added a new row to the database, 'free', to allow a host free surfing...
+#   Make sure that we do not delete the host from the masquerading table if
+#   this is set to 1...
+#
+# Revision 1.66  1997/11/06 13:42:33  turbo
+# Oooppps... Found some small buggs from my last commit, missing end paranthesis
+# *blussh*
+#
+# Revision 1.65  1997/11/06 13:16:50  turbo
+# * Removed the function 'terminate()', it basicly did the same thing as the
+#   function 'fel()'...
+# * Changed the logging strings a little, when an error occures, print
+#   'ERROR: ....', when debugging, print '=> ....' etc, makes it easier to
+#   locate an error or other problem in the logg file...
+# * Do not call 'fel()' (which terminates the process) or 'die()', yell 'AIEEE:'
+#   to the loggfile what the problem is and return a reasonable value...
+#
+# Revision 1.64  1997/11/04 14:55:07  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+# Make sure the ISDN flags is not a question mark, can't do left shift on a
+# non numeric value...
+#
+# Revision 1.63  1997/10/24 17:40:02  turbo
+# Use '/usr/bin/w -f' instead of '/usr/bin/who'... It may not lock the program
+# in the same way...
+#
+# Revision 1.62  1997/10/19 18:51:31  turbo
+# If someone is logged in at the terminal, you do not have a 'source host' in
+# the who output... I thought I fixed this earlier, wonder what happened to
+# that fix... Strange...
+#
+# Revision 1.61  1997/10/18 01:03:31  turbo
+# Got the check for a external connect to work, if we have a connect on our
+# remote interface (in our case, the ippp0 interface), we check if anyone is
+# logged on from the remote address...
+# Make sure we skip as many 'unimportant' lines as possible, to speed things
+# up a little (no need to double check people logged in from our own domain
+# etc)...
+#
+# Revision 1.60  1997/10/16 21:27:51  turbo
+# Got the check for a remote user to work... Only loggs the connection so faar
+#
+# Revision 1.59  1997/10/16 20:37:23  turbo
+# * Think I have found a way to figgure out if a user is logged on to the
+#   computer from the outside...
+#
+#   If the 'Local Address' in '/bin/netstat -ten' is our local (i)ppp0 address,
+#   and if the connection user is root (telnetd/sshd is runned by root), then
+#   we can check who is logged in on the computer from the 'Remote Address'...
+#
+#   This does not salve ftp/www connects etc, but it is a step in the right
+#   direction...
+#
+# Revision 1.58  1997/10/16 15:58:14  turbo
+# Moved the function 'get_timestring()' to the library files since it is needed
+# by more programs than the daemon...
+#
+# Revision 1.57  1997/10/16 15:52:59  turbo
+# Moved the reading of the config file to a separate function, that can be
+# called incase we send a SIGHUP to the process...
+#
+# Revision 1.56  1997/10/07 17:44:38  turbo
+# Logg more if debugging... Only _READ_ from the database, don't write...
+# Corrected some spelling and 'code formation' errors... :)
+# Corrected some major buggs in the check_masqueraded() function!!!!
+#
+# Revision 1.55  1997/10/06 16:21:57  turbo
+# Some output incase of DEBUG'ing... Only uncommented some print's and put them
+# in 'if( $DEBUG )', no other coding here this time... :)
+#
+# Revision 1.54  1997/10/06 16:13:21  turbo
+# * Moved some 'not nice' thingies to separate functions, called
+#   'check_masqueraded()' and 'fix_period_or_something()'. Call the first one
+#   only if we have defined MASQUERADING...
+# * Make sure we remember how many ISDN lines we have online, is used when
+#   we later check what rate we should use... One line up, multiply with one.
+#   If we have two lines up, multiply with two, wery basic!!! :)
+# * When (if?) checking if ISDN is online, we first assume that isdn_online is
+#   zero, then add one if 'calling' or 'online'... I'm not sure what to do when
+#   'exclusive'... Have to check that up... Some day... :)
+# * When checking the rate, first check wether we have a weekday or not, THEN
+#   check how many ISDN lines we have online and multiply...
+# * Some clean up of the code... It might be perfectly readable by budda, who
+#   wrote it, but not that perfect to me... :) I prefere it this way:
+#   '$variable = value;' instead of '$variable=value'... :D
+#
+# Revision 1.53  1997/10/06 15:12:15  turbo
+# Some how the CVS header was fucked up... Removed mutli lines...
+#
+# Revision 1.52  1997/10/06 15:10:22  turbo
+# * Added the function 'check_online_isdn()' and renamed the function
+#   'check_online()' to 'check_online_ppp()'...
+# * The new function 'check_online_isdn()' opens the device '/dev/isdninfo'
+#   which contains six lines, with ISDN status... Each field corresponds to one
+#   channel...
+#
+# Revision 1.51  1997/10/03 15:46:08  turbo
+# Patched for ISDN-PPP connection... Function 'check_online()' now returns
+# 2 if it is an ISDN connection, incase we need that...
+#
+# Revision 1.50  1997/09/28 17:27:40  turbo
+# Removed the hardcoded reference to our local network. Opens the file
+#   '/etc/networks' and search for the line beggining with 'localnet'.
+#   Check the sub 'get_network_address()'...
+#
+# Revision 1.49  1997/08/17 17:29:14  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#
+# Revision 1.48  1997/05/29 22:19:04  marbud
+# Slutligen verkar det funka som det skall.. Sigh..
+#
+# Revision 1.47  1997/05/29 21:40:28  marbud
+# En mindre bugg i getcurrent_period subben... Fixxat..
+#
+# Revision 1.46  1997/05/29 21:36:57  marbud
+# Nu med periodisering support...
+#
+# Revision 1.45  1997/05/18 20:46:14  marbud
+# Forsok till att fixxa fel i veckodags avkondingen.. Den tror alltid att det
+# ar en veckodag.. Illa..
+#
+# Revision 1.44  1997/05/06 17:09:56  marbud
+# Fixxat några buggar i check_rate subben.. Den tog alla dagar som
+# vardagar pga || istf && i kontrollen av dagen.
+#
+# Revision 1.43  1997/04/15 17:56:33  marbud
+# Lagt in loggning av processer vi skjuter ner...
+#
+# Revision 1.42  1997/04/09 20:30:27  marbud
+# Lagt in nummer räkning i loggen per session... (eller nåt..)
+# $cur....
+#
+# Revision 1.41  1997/04/09 20:26:53  marbud
+# Flertal meck ändringa i hänsyn till loggning.. Bugg borttagen som
+# gav hirate hela tiden.
+#
+# Revision 1.40  1997/04/09 20:03:36  marbud
+# Lite buggar i den tänkta loggning borttagna..
+#
+# Revision 1.39  1997/04/09 19:41:58  marbud
+# Meckat till mer loggning utan DEBUG...
+#
+# Revision 1.38  1997/02/07 04:00:23  marbud
+# lite sm[ buggar fixxade.. Tar nu bara med maskerade sessioner som har
+# varit aktiva under denna PERIODEN. kanske bra.. eller n[tt..
+#
+# Revision 1.37  1997/02/07 02:21:00  marbud
+# nu med koll av Maskerade kopplingar och hur lange sedan de var aktiva
+# for att veta om nagon anvande ip genom maskering..
+#
+# Revision 1.36  1997/02/07 00:51:18  marbud
+# Nu med ip accounting support..  Fan vet om det 'r bra dock..
+#
+# Revision 1.35  1997/02/06 21:11:46  marbud
+# Support för nerräkning av tic.. När tick når 0 antarvi att något är
+# fel, och stänger maskeringen av hosten samt rederar all info om
+# personen från masq tabellen..
+#
+# Revision 1.34  1997/01/23 18:08:49  marbud
+# Rättat några buggar.. mm.
+#
+# Revision 1.33  1997/01/20 23:03:04  marbud
+# Nu med config fil support. Se readconfig funktionen..
+#
+# Revision 1.32  1997/01/19 09:26:30  marbud
+# Lite om skrivningar här och där.. Annat sätt att hantera loggningen bla..
+#
+# Revision 1.31  1997/01/19 07:51:50  marbud
+# Kör nu var 10 sekund. Har testa lite, och när man kör var 30 sekund kan man
+# inte urskilja varken tcpquotad eller msqld med top.
+#
+# Revision 1.30  1997/01/19 05:25:52  marbud
+# bättre debug hantering.. Mindre loggning..
+#
+# Revision 1.29  1997/01/19 05:22:13  marbud
+# Raderat gammal kod för masquerading hantering.. etc..
+#
+# Revision 1.28  1997/01/19 04:59:55  marbud
+# Nu med masqueradeing support genom masq tabellen.
+#
+# Revision 1.27  1997/01/19 00:42:50  marbud
+# Fixxat liten bugg som skrev fel namn på skärmen i debugg läge..  (jaja..)
+#
+# Revision 1.26  1997/01/18 22:31:50  marbud
+# Opps.. Bugg.. $# ger 0 om det finns ett namn i arrayen.. Inte bra om man skall
+# dividera med antalet.... :-)
+#
+# Revision 1.25  1997/01/18 18:23:16  marbud
+# Fixxat bort en del array hantering som var lite knasig.. Nu använder vi oss av
+# perls interna funktioner för att hålla reda på arrayen..
+#
+# Revision 1.24  1997/01/18 18:12:13  marbud
+# Små buggar borta.. Bla försvann inte ppp från /proc/net/dev när linan gick ner.
+# SÅ den kan man inte använda...
+#
+# Revision 1.23  1997/01/18 18:04:04  marbud
+# Lagt in så vi använder /proc/net/dev istf två netstat commandon..
+#
+# Revision 1.22  1997/01/18 16:56:24  marbud
+# Fixxat till en del små saker. Tagit bort kod utan funktion etc..
+#
+# Revision 1.21  1997/01/18 16:35:22  marbud
+# Added $header$ and $log$ entries...
+#

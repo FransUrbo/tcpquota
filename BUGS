@@ -1,0 +1,22 @@
+1. When a user  logs  in to  the system,  '/bin/login'  does  not always
+   records the IP address of the  host the user  is connecting from... If
+   you are using a login program that uses libc6, this is not true, since
+   libc6 is using a different kind of utmp file...
+
+   You can check if your login program is using libc5 or libc6 by issuing
+   the following command:
+
+     ldd /bin/login
+
+   If you get the following line:
+
+     libc.so.5 => /lib/libc.so.5
+
+   Then...  You  are  using libc5...  :) The  problem   only occurs when
+   someone is  logging in via telnet/rsh/rlogin _AND_  is  coming from a
+   host with a very long FQDN (Fully  Qualified Domain Name) _AND_ we are
+   checking for remote connects, 'CHECK_REMOTE=1'...
+
+   This bug is out  of my hands,  it's up to  you to upgrade the lib  and
+   login program...  This  is not _THAT_ very  serious though, some users
+   might slip through, but...

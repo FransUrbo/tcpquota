@@ -1,0 +1,28 @@
+Begin3
+Title:          TCPQuota
+Version:        1.6.14
+Entered-date:   01AUG98
+Description:    A dialout monitoring package.
+	TCPQuota monitors and debit users depending
+	on there online time (dialout). The program
+	is made for those who have a local network
+	with a server that also functions as a Internet
+	gateway (among other things). The server runs
+	diald, for example, which does the actual
+	dial-on-demand, and this package which debit
+	each user, wheter from the server or from a
+	masqueraded host (program includes masquerade
+	code). All a user from inside the gateway/firewall
+	have to do is run the command 'tcp_masq_openhost'
+	or 'ut' (swedish for 'out'), and the hostname and
+	username is masqueraded and debited acording to the
+	time they spend calling out.
+Keywords:       quota tcp masquerading masq ip firewall accounting
+Author:         turbo@tripnet.se (Turbo Fredriksson), marbud@tripnet.se (Martin Budsjoe)
+Maintained-by:  turbo@tripnet.se (Turbo Fredriksson)
+Primary-site:   sunsite.unc.edu /pub/Linux/system/network/admin
+Alternate-site: ftp.debian.org 
+Original-site:  
+Platforms:      perl Linux
+Copying-policy: GPL
+End

@@ -1,0 +1,69 @@
+#!/usr/bin/make -f
+# MAde with the aid of dh_make, by Craig Small
+# Sample debian/rules that uses debhelper. GNU copyright 1997 by Joey Hess.
+# Some lines taken from debmake, by Cristoph Lameter.
+
+
+# Figure out the current version.
+VERSION=$(shell expr "`dpkg-parsechangelog 2>/dev/null`" : \
+	'.*Version: \(.*\).*Distribution:')
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+build: build-stamp
+build-stamp:
+	dh_testdir
+	touch build-stamp
+
+clean:
+	dh_testdir
+	dh_testroot
+	rm -f build-stamp
+
+	dh_clean
+
+# Build architecture-independent files here.
+binary-indep: build
+# We have nothing to do by default.
+
+# Build architecture-dependent files here.
+binary-arch: build
+	dh_installdirs
+
+	$(MAKE) install_bins_user install_bins_system install_configs_debian \
+		library_file library_binaries DESTDIR=`pwd`/debian/tmp
+
+	cp confs/tcpquota.init debian/
+	dh_installinit -n
+
+	cp confs/tcpquota.cron debian/cron.weekly
+	dh_installcron
+
+	dh_installdocs changelog
+	dh_installmenu
+
+	dh_installmanpages
+	dh_undocumented toptcp.1
+	ln -s tcp_masq_openfw.8.gz debian/tmp/usr/man/man8/openfw.8.gz
+	ln -s tcp_masq_openhost.8.gz debian/tmp/usr/man/man8/openhost.8.gz
+
+	dh_installchangelogs
+	dh_compress
+	dh_fixperms
+	dh_installdeb
+	dh_shlibdeps
+	dh_gencontrol
+	dh_md5sums
+
+	dh_builddeb
+
+source diff: binary-arch
+	@( \
+	  DESTDIR=`pwd`; \
+	  cd `pwd`/..; \
+	  dpkg-source -b $$DESTDIR $$DESTDIR.orig; \
+	)
+
+binary: binary-indep binary-arch
+.PHONY: build clean binary-indep binary-arch binary

@@ -1,0 +1,405 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+# Check the tcp quotas for the user(s) so faar.
+# 
+#
+# 1996-09-15 turbo:  begun
+# 1996-09-24 turbo:  added cost to the list function
+#
+# $Header: /usr/lib/cvs/root/tcpquota/chktcpquota,v 1.30 1998/09/19 01:48:13 turbo Exp $
+#
+# $Log: chktcpquota,v $
+# Revision 1.30  1998/09/19 01:48:13  turbo
+# Just make sure that the '$min' variable contains something, before we print
+# out the amount...
+#
+# Revision 1.29  1998/08/01 19:57:51  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.28  1998/05/25 16:07:03  turbo
+# * If we give the option '-u', we should assume that we mean our self...
+# * Print a bar '|', to separate the two columns in the list database.
+# * Don't output the 'You can no longer access the net...' if it's a 'free user'...
+# * Moved the 'check_periods()' from 'tcpperiod' here instead, more appropriate here.
+#
+# Revision 1.27  1998/05/24 19:32:02  turbo
+# Some retinking... If we give the option '-u', we need a username to output
+# quota for...
+#
+# Revision 1.26  1998/05/24 15:47:18  turbo
+# * Make sure we open the right config file if debuging...
+# * Print the quota output in TWO columns, instead of one (chktcpquota -a)
+#
+# Revision 1.25  1998/05/24 15:38:42  turbo
+# Help more conformant with the other programs in the package...
+#
+# Revision 1.24  1998/03/31 12:16:03  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.23  1998/03/14 23:02:57  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.22  1997/12/03 10:15:23  turbo
+# * Moved the 'list_dbase()' to the library file, it was (practicaly) used
+#   by the 'addtcpquota' script to...
+#
+# Revision 1.21  1997/11/26 21:29:54  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.20  1997/11/26 19:53:27  turbo
+# Moved the function 'list_logg()' to the library file, it was needed
+# elsewhere to...
+#
+# Revision 1.19  1997/11/06 13:18:59  turbo
+# Fixed a complaint, that when running without param's or with the param
+# '--user' (which both outputs the users own quota), and the user did not exist
+# in the database (because he/she have not payed for any TCPQuota), the program
+# said that '<user> does not exists in database' which was taken as an system
+# error...
+#
+# Revision 1.18  1997/11/04 14:53:32  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.17  1997/10/19 19:24:46  turbo
+# Tell the user why the user can not access the net if MIN_QUOTA eq 0, and he/she
+# is bellow that...
+#
+# Revision 1.16  1997/10/19 18:50:20  turbo
+# If called without arguments, output your own quota...
+#
+# Revision 1.15  1997/10/19 18:24:31  turbo
+# The script 'chktcpquota' did almost the same thing as the script 'tcpquota',
+# the only difference was that 'tcpquota' check your own quota, while 'chktcpquota'
+# could check ALL users quota... Implemented the function to only check your
+# own quota in 'chktcpquota'... Could be a little nicer though...
+#
+# Revision 1.14  1997/10/18 00:55:51  turbo
+# * When listing the quota/log database, output a little header with username
+#   of the user printing the list with the date.
+# * Sort the list alphabeticly...
+# * Make sure local variables stays local, I should really double check that
+#   in the other programs to...
+#
+# Revision 1.13  1997/10/16 17:46:52  turbo
+# If we don't have any params, give the correct help...
+#
+# Revision 1.12  1997/10/16 17:26:42  turbo
+# When getting a users tcptab entry, no need to do it in a while, we have
+# already selected the correct line above... This way, if a user does not
+# exists, we can say so...
+#
+# Revision 1.11  1997/10/16 17:06:21  turbo
+# If the logging table does not exists, exit cleanly...
+#
+# Revision 1.10  1997/10/16 16:50:52  turbo
+# Added support for printing the log... The new function 'list_logg()' does
+# this...
+#
+# Revision 1.9  1997/10/16 16:38:09  turbo
+# If the first character is a '-', the user owes money, if not, the user have
+# quota to use...
+#
+# Revision 1.8  1997/10/16 15:46:32  turbo
+# Moved the function 'calculate_cost()' to the library file, no need to have
+# it in all files...
+#
+# Revision 1.7  1997/10/12 17:47:52  turbo
+# * Removed the fucked up header lines...
+# * Perl complained about a uninitialized variable... Set it to zero if it is
+#   empty...
+#
+# Revision 1.6  1997/10/02 11:56:39  turbo
+# No debugging please...
+#
+# Revision 1.5  1997/09/26 15:54:53  turbo
+# * Forgot the '$DEBUG' variable... Perl complained...
+# * Better looking output in the user/cost/quota listing...
+# * Use the config files 'RATE_QUOTA' instead of the local 'RATE_PRICE' variable.
+#
+# Revision 1.4  1997/08/17 17:20:40  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Changed and deleted some site specific entries, and made them less site
+#   specific...
+#
+#
+
+# Include some magic...
+use DBI;
+use POSIX;
+#use Getopt::Long;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+
+$DEBUG = 0;
+$ALL   = 0;  # Not all...
+$LOG   = 0;  # Not logging...
+$OWN   = 0;  # Not our own quota...
+
+# Who are running the program?
+$USER = $ENV{'USER'};
+
+# Does we have any arguments?
+if( $ARGV[0] ) {
+    # Ohh yes.... Process it...
+
+    foreach $arg (@ARGV) {
+	# Help?
+	if( ($arg eq 'help') || ($arg eq '--help') || ($arg eq '-h') ) {
+	    &help();
+	} elsif( ($arg eq 'user') || ($arg eq '--user') || ($arg eq '-u') ) {
+	    if( $ARGV[1] ) {
+		$user = $ARGV[1];
+	    } else {
+		$user = $USER;
+	    }
+	} elsif( ($arg eq 'all') || ($arg eq '--all') || ($arg eq '-a') ) {
+	    $ALL = 1;
+	} elsif( ($arg eq 'log') || ($arg eq '--log') || ($arg eq '-l') ) {
+	    $LOG = 1;
+	}
+    }
+} else {
+    $OWN = 1;
+    $user = $USER;
+}
+
+######################################################################
+#
+# configuration parameters
+#
+
+$PROG="chktcpquota";
+$CF_FILE="tcpquota.cf";
+$CF_FILE="tcpquota.cf.debug" if (defined $ENV{DEBUG} or $DEBUG);
+%cf=(); # config array.
+&readconfig("$conf_dir/$CF_FILE",$PROG);
+
+######################################################################
+#
+# initializing stuff
+#
+
+# Open up the database connection...
+&open_sql_server();
+
+######################################################################
+#
+# main loop
+#
+$date = &get_timestring();
+if( !$ALL && !$LOG ) {
+    &read_dbase( $user );
+} elsif( $LOG ) {
+    # Print out a little header...
+    printf("List printed by $USER $date\n\n");
+
+    &list_logg("logging");
+} else {
+    # Print out a little header...
+    printf("List printed by $USER $date\n\n");
+    printf("User name      Quota         Money\t|  ");
+    printf("User name      Quota         Money\n");
+
+    &list_dbase("tcptab");
+    &check_periods();
+}
+exit(0);
+
+######################################################################
+#
+# read_dbase( $user )
+#
+# Check if the user is in the database...
+#
+sub read_dbase {
+    local($user) = @_;
+    my($name, $sec, $cost, $query, $sth);
+
+    # Query the database.
+    $query = "select * from tcptab where name like '$user'";
+    $sth = $dbh->prepare($query) || die( "Error when query..." );
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    ($name,$sec) = $sth->fetchrow_array;
+    if( $name ) {
+	if( $sec ) {
+	    if( $OWN ) {
+		if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		    print "Detta ar ett meddelande fran din lokala Internet vakt...\n";
+		} else {
+		    print "This is a message from your local Internet watch...\n";
+		}
+	    }
+
+	    # Calculate the cost...
+	    $cost = calculate_cost($sec);
+
+	    # Calculate number of minutes...
+	    $min  = int($sec/60);
+
+	    if( $cost =~ /^\-/ ) {
+		# Remove the minus chars...
+		$cost = (split(/-/, $cost))[1];
+		$min  = (split(/-/, $min))[1];
+		if(! $min ) {
+		    $min = 0;
+		}
+
+		if( $OWN ) {
+		    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+			print "Du har varigt paloggad i cirka `$min' minuter,\n";
+			print "vilket betyder att du är skyldig $cost $cf{'MONEY_VALUE'}.\n\n";
+			if(!$cf{'MIN_QUOTA'} && !&check_free_user($user)) {
+			    print "Du kan inte längre komma ut på nätet, såvida du inte betalar in pengar...\n"
+			}
+			print "\n";
+		    } else {
+			print "You have been online for about `$min' minutes,\n";
+			print "which means that you owes $cost $cf{'MONEY_VALUE'}.\n\n" if($sec < 0);
+			if(! $cf{'MIN_QUOTA'} ) {
+			    print "You can no longer access the net, unless you make a money deposit...\n";
+			}
+			print "\n";
+		    }
+		} else {
+		    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+			printf("%-10s är skyldig %5d kronor.\n\n", $user, $cost);
+		    } else {
+			printf("%-10s owes %5d kronor.\n\n", $user, $cost);
+		    }
+		}
+	    } else {
+		if( $OWN ) {
+		    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+			print "Du har betalat för cirka `$min' oanvända minuter,\n";
+			print "vilket betyder att du har $cost $cf{'MONEY_VALUE'} at disponera.\n\n" if($sec > 0);
+		    } else {
+			print "You have payed for about `$min' unused minutes,\n";
+			print "which means that you have $cost $cf{'MONEY_VALUE'} at your disposal.\n\n" if($sec > 0);
+		    }
+		} else {
+		    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+			printf("%-10s har %5d kronor till godo.\n\n", $user, $cost);
+		    } else {
+			printf("%-10s have %5d kronor.\n\n", $user, $cost);
+		    }
+		}
+	    }
+	} else {
+	    if( $OWN ) {
+		if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		    print "Du har inte accumulerat någon TCP quota...\n";
+		} else {
+		    print "You have not accumulated any TCP quota...\n";
+		}
+	    } else {
+		if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		    # $USER does not have any quota...
+		    print "$user har inte accumulerat någon TCP quota...\n";
+		} else {
+		    # $USER does not have any quota...
+		    print "$user have not accumulated any TCP quota...\n";
+		}
+	    }
+	}
+    } else {
+	if(! $OWN ) {
+	    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		# $USER was not found in database...
+		print "$user existerar inte i databasen...\n";
+	    } else {
+		# $USER was not found in database...
+		print "$user does not exists in database...\n";
+	    }
+	}
+    }
+}
+
+######################################################################
+#
+# check_periods()
+#
+sub check_periods {
+    my($sth, $tmp, $numrows, $name, $quota, $free, $total, $money);
+
+    $sth = $dbh->prepare("select * from tcptab");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+    if( $numrows = $sth->rows ) {
+	while( $numrows-- ) {
+	    ($name, $quota) = $sth->fetchrow_array;
+	    if( &check_free_user($name) ) {
+		$free += $quota;
+	    } else {
+		$total += $quota if( $quota !~ /^\-/ );
+	    }
+	}
+    }
+
+    $money = int($total / 600);
+    printf("Total:     %9d  (%5d kronor)\n",$total, $money);
+
+    $tmp = $free;
+    $tmp =~ s/^-//;
+    $money = int($tmp / 600);
+    printf("Free:      %9d  (%5d kronor)\n",$free, $money);
+
+    # Print out the free users...
+    print "Free users:  ";
+    foreach $tmp (split(' ', $cf{'USERS'})) {
+	print "$tmp ";
+    }
+    print "\n";
+}
+
+######################################################################
+#
+# truncate_value()
+#
+sub truncate_value {
+    local($temp) = @_;
+    my($sum);
+
+    if( $temp ) {
+	# Remove the leading '-'.
+	@temp = split(/-/, $temp);
+
+	# Remove the fractals
+	$sum  = int($temp);
+
+	# Return the sum...
+	return $sum;
+    }
+}
+
+sub help {
+    print "Usage: chktcpquota [OPTION] [<user>]\n";
+    print "  Where OPTIONS could be:\n";
+    print "   --all,  all,  -a       List all users and there quota points\n";
+    print "   --log,  log,  -l       List the quota change log\n";
+    print "   --user, user, -u       List a specific users quota. Without username, list your own...\n";
+    print "   Without options, list your own quota points...\n";
+    exit(0);
+}

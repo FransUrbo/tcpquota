@@ -1,0 +1,118 @@
+#!/usr/bin/perl -w
+
+# $Header: /usr/lib/cvs/root/tcpquota/topmasq,v 1.11 1998/04/17 07:57:38 turbo Exp $
+#
+# $Log: topmasq,v $
+# Revision 1.11  1998/04/17 07:57:38  turbo
+# Fixed a bug in the loop, which cycles through the masquerading
+# entries...
+#
+# Revision 1.10  1998/01/23 15:49:24  turbo
+# Make sure we split the correct variable, instead of STDIN, forgot that when
+# I rewrote it to be compatible with newer perl which does not like to do
+# 'while(<FILEHANDLE>)'...
+#
+# Revision 1.9  1998/01/16 15:10:04  turbo
+# Perl changed the way it handled file handles... When we cyckle through the
+# file, make sure we only do that while ! eof.
+#
+# Revision 1.8  1997/12/04 14:11:05  turbo
+# Got the fetching of the IP address from the utmp file to work, updated
+# the WHO variable and it's splitting accordingly...
+#
+# Revision 1.7  1997/11/26 21:56:42  turbo
+# Forgot to include the utmp header file...
+#
+# Revision 1.6  1997/11/26 21:49:01  turbo
+# We have the possibility to use a homemade function, 'get_online()', which
+# returns the users online right now, instead of using '/usr/bin/who'...
+#
+# Revision 1.5  1997/11/26 21:29:57  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.4  1997/11/19 20:42:00  turbo
+# Cleaned up the output, not so much crap info...
+#
+# Revision 1.3  1997/11/19 19:57:45  turbo
+# Instead of using '/sbin/ipfwadm -Ml' to get the hosts currently masqueraded,
+# open the file '/proc/net/ip_masquerade', which contains the same information,
+# only in raw mode... Might make the program a little faster, no overhead of
+# starting an external program...
+#
+# Revision 1.2  1997/08/17 17:29:14  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#
+#
+
+require "./lib/tcpquota.pl";
+require "./lib/utmp.ph";
+
+# log period in seconds
+$PERIOD = 5;
+
+######################################################################
+#
+# main loop
+#
+while(1) {
+    my($line);
+
+    # Clear the screen.
+    system( 'clear' );
+
+    # Print out some leading text...
+    print "\nUser       User from                      Masquerading host\n";
+
+    open(MASQUERADE, "/proc/net/ip_masquerade")
+	|| die "Could not open '/proc/net/ip_masquerade', $!";
+    <MASQUERADE>; # throw away first line
+    while(! eof(MASQUERADE) ) {
+	%WHO = ();
+	$line = <MASQUERADE>;
+
+	@a = split(' ', $line);
+	# $a[1]   = source of masqueraded data (with port)
+	# $a[2]	  = destination of masqueraded data
+
+	$source = &find_fqdn(&hex_to_ip((split(':', $a[1]))[0]));
+
+	# Read from '/usr/bin/w'
+	%WHO = &get_online();
+
+	# Get the remote hostname...
+	$i = 0;
+	while($WHO{$i}) {
+	    ($user, $host, $dummy, $dummy) = split(' ', $WHO{$i});
+
+	    if($host) {
+		# find if anyone is coming from source address
+		if( $host eq $source ) {
+		    # the user and host is ok.
+
+		    printf("%-10s %-30s %-30s\n", $user, $source, $host);
+		}
+	    }
+
+	    $i++;
+	}
+    }
+
+    close(<MASQUERADE>);
+
+    sleep $PERIOD;
+}
+

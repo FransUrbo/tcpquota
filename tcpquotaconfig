@@ -1,0 +1,321 @@
+#!/bin/bash
+
+#
+# $Log: tcpquotaconfig,v $
+# Revision 1.10  1998/09/12 02:07:12  turbo
+# * Make sure the variable LIBDIR contains something...
+# * Fixed a problem with variable initalization... Sometimes I mix up the way
+#   one initialize variables in bash/sh and perl... *blush*
+# * Make sure the SERVER variable contains the correct value
+# * Don't add a bracket (`#') before the 'USERS=xxx' line... If the user have
+#   choosen to give some names, it should be used.
+#
+# Revision 1.9  1998/08/29 21:12:17  turbo
+# Added some support for parsing and using the old values in an old config file...
+# Don't work yet though, I have to figgure out how to cope with values with
+# spaces in them... Can't just source the file...
+#
+# Revision 1.8  1998/08/29 20:18:56  turbo
+# * Make sure the 'CFGDIR' variable contains a value... If it is runned from a
+#   make, it is set in the Makefile, but it's empty if runned from the shell...
+# * Ask some questions about which users should be allowed free surfing, and
+#   use that value in the config file...
+#
+# Revision 1.7  1998/08/11 02:25:38  turbo
+# * Find out what type of SQL server the user would like to use, msql or mysql.
+# * No need to change any '#export MSQL....' in the init script any more, I
+#   moved that info to the config file a while ago...
+#
+# Revision 1.6  1998/08/02 17:50:46  turbo
+# * Added a new config option, 'get_localnets', which asks which networks that
+#   is local to this server.
+# * Added option to have a static and permanent link.. Had to rewrite the daemon
+#   a little to for this to work. If we have a permanent link, don't ask for
+#   remote address...
+# * If we try to type in a protocol that does not exists, don't exit, go back
+#   from the beginning.
+# * If we are not running the SQL server at the default port 4333, say so here,
+#   by specifying '<address>:<port>'. If we do run the server at the default
+#   port, add 4333 to the SERVER variable, so that it is stored in the config
+#   file...
+# * Use 'mktemp' to create a temp file, to use when creating the new config
+#   file... Also tell the user that he/she should fine tune the config file,
+#   but that it atleast should work with the config specified.
+#
+# Revision 1.5  1998/08/01 20:05:02  turbo
+# Could not remember how you do a 'goto' in bourne shell... Had to use functions
+# instead, all called from the 'main()' function. That way we can keep calling
+# main() over and over to the user is satisfied with the config.
+#
+# Revision 1.4  1998/04/13 14:03:27  turbo
+# If we have choosen to use the local mSQL server, remove the
+# comment from the 'export MSQL...' lines
+#
+# Revision 1.3  1998/04/13 10:44:29  turbo
+# Added a newline at the end
+#
+# Revision 1.2  1998/01/16 14:10:31  turbo
+# * Make sure we could input characters _AND_ integers...
+# * Only give out the remote address for verification if we have choosen the
+#   ISDN protocol...
+#
+# Revision 1.1  1997/12/02 21:25:50  turbo
+# Configure the TCPQuota package interactivly... Initial CVS revisition.
+#
+#
+
+if [ "$CFGDIR" = "" ]; then
+    CFGDIR=/etc/tcpquota
+fi
+
+if [ "$LIBDIR" = "" ]; then
+    LIBDIR=/usr/lib/tcpquota
+fi
+
+main()
+{
+    #load_defaults
+
+    get_proto
+    get_addresses
+    get_localnets
+    get_server
+    get_sql
+    get_free
+    get_mysql
+
+    double_check
+}
+
+load_defaults()
+{
+    if [ -f "$CFGDIR/tcpquota.cf" ]; then
+	source $CFGDIR/tcpquota.cf
+    fi
+
+    if [ -f "confs/tcpquota.cf.debug" ]; then
+	source confs/tcpquota.cf.debug
+    fi
+}
+
+get_proto()
+{
+    echo
+    echo "What protocol do you use to connect to the Internet?"
+    echo "  1. Static  ISDN     You always have the same IP assigned, using dialup ISDN"
+    echo "  2. Static  Ethernet You always have the same IP assigned, using permanent ethernet"
+    echo "  3. Dynamic PPP      You get a different IP every time, using dialup PPP"
+    echo "  0. Quit             You can do this later with $LIBDIR/tcpquotaconfig"
+    echo
+    echo -n "[$PROTOCOL] ? "
+    read prot
+    if [ "$prot" = "0"  -o "$prot" = "quit" ]; then
+	echo "Remember, you can do this later by calling the script"
+	echo "$LIBDIR/tcpquotaconfig..."
+	exit 0
+    fi
+
+    if [ "$prot" != "" ]; then
+	if [ "$prot" = "1" -o "$prot" = "static" ]; then
+	    PROTOCOL=isdn
+	elif [ "$prot" = "2" -o "$prot" = "ethernet" ]; then
+	    PROTOCOL=ethernet
+	elif [ "$prot" = "3" -o "$prot" = "dynamic" ]; then
+	    PROTOCOL=ppp
+	else
+	    echo "No such protocol, $prot"
+	    main
+	fi
+    fi
+}
+
+get_addresses()
+{
+    # Get a default value from eth0
+    if [ "$PROTOCOL" = "ethernet" ]; then
+	set -- `ifconfig eth0 | grep inet`; shift
+	LOC_ADDR=`echo $1 | sed -e "s/addr://"`
+    fi
+
+    if [ "$PROTOCOL" = "isdn" -o "$PROTOCOL" = "ethernet" ]; then
+	echo
+	echo "What IP address does THIS SIDE of the link have?"
+	echo "(This is used to check if any one is using the link)"
+	echo -n "[$LOC_ADDR] ? "
+	read loc_addr
+	if [ "$loc_addr" != "" ]; then
+	    LOC_ADDR=$loc_addr
+	fi
+
+	if [ "$PROTOCOL" != "ethernet" ]; then
+	    echo
+	    echo "What IP address do the OTHER END of the link have?"
+	    echo "(This is used to double check if the link is realy up)"
+	    echo -n "[$REM_ADDR]? "
+	    read rem_addr
+	    if [ "$rem_addr" != "" ]; then
+		REM_ADDR=$rem_addr
+	    fi
+	fi
+    else
+	LOC_ADDR=dynamic
+    fi
+}
+
+get_localnets()
+{
+    echo
+    echo "What is considered local networks, ie, what networks should we ignore?"
+    echo "Use space separated list of network addresses (ex: '42.42.0.0 192.168.0.0')"
+    echo -n "[$LOCALNET] ? "
+    read localnets
+
+    if [ "$localnets" != "" ]; then
+	LOCALNET=$localnets
+    fi
+}
+
+get_server()
+{
+    echo
+    echo "What type of Database engine would you like to use "
+    echo "Currently only mSQL or mySQL is supported. "
+    echo "1. mSQL"
+    echo "2. mySQL"
+    echo -n "[$ENGINE] ? "
+    read engine
+
+    if [ "$engine" != "" ]; then
+	if [ "$engine" = "1" ]; then
+	    ENGINE=mSQL
+	elif [ "$engine" = "2" ]; then
+	    ENGINE=mysql
+	fi
+    fi
+}
+
+get_sql()
+{
+    SERVER="localhost:3306"
+
+    echo
+    echo "Where is the $ENGINE server which is servicing the TCPQuota database"
+    echo "located? (Fully Qualified Domain Name or IP address please) "
+    echo "If You are using the local $ENGINE server, say 'localhost'."
+    echo "If you are using a non standard port (ie, not port 3306), say '<address>:<port>'."
+    echo -n "[$SERVER] ? "
+    read server
+
+    if [ "$server" != "" ]; then
+	echo $server | grep ':' > /dev/null
+	if [ "$?" == "1" ]; then
+	    SERVER=$server:3306
+	else
+	    SERVER=$server
+	fi
+    fi
+}
+
+get_free()
+{
+    echo
+    echo "Is there any users that should be considered to go under the MINQUOTA?"
+    echo "If so, add them here, with spaces between them. If not, just press ENTER"
+    echo -n "[$USERS] ? "
+    read free
+
+    if [ "$free" != "" ]; then
+	FREE=$free
+    fi
+}
+
+get_mysql()
+{
+    echo
+    echo -n "What is the admin user of your mySQL database [root]? "
+    read mysql_admin
+    if [ "$mysql_admin" != "" ]; then
+	ADMIN="$mysql_admin"
+    else
+	ADMIN="root"
+    fi
+
+    echo
+    echo -n "What is the password for the mySQL admin user? "
+    stty -echo
+    read mysql_passwd
+    stty echo
+
+    if [ "$mysql_passwd" != "" ]; then
+	PASSWD="$mysql_passwd"
+    else
+	PASSWD=
+    fi
+
+    export ADMIN PASSWD
+}
+
+double_check()
+{
+    # Double check...
+    echo
+    echo
+    echo "Is the choosen configuration correct?"
+    echo "  Protocol:           $PROTOCOL"
+    echo "  Local address:      $LOC_ADDR"
+    if [ "$PROTOCOL" == "isdn" -a "$PROTOCOL" != "ethernet" ]; then
+	echo "  Remote address:     $REM_ADDR"
+    fi
+    if [ "$LOCALNET" != "" ]; then
+	echo "  Local nets:         $LOCALNET"
+    fi
+    echo "  Free users:         $FREE"
+    if [ "$ENGINE" == "mSQL" ]; then
+	echo "  mSQL server:        $SERVER"
+    else
+	echo "  mySQL server:       $SERVER"
+	echo "  mySQL admin user:   $ADMIN"
+	echo "  mySQL admin passwd: *******"
+    fi
+
+    echo
+    echo -n "Okay? (Y/n)"
+    read ok
+}
+
+main
+
+if [ "$ok" != "n" -a "$ok" != "N" ]; then
+    TMP_FILE=`/bin/mktemp -q /tmp/tcpquota.XXXXXX`
+    if [ "$?" -ne 0 ]; then
+	echo "$0: Can't create temp file, exiting..."
+	exit 1
+    fi
+
+    sed -e "s@%PROTOCOL%@$PROTOCOL@g" \
+	-e "s@%LOC_ADDR%@$LOC_ADDR@g" \
+	-e "s@%REM_ADDR%@$REM_ADDR@g" \
+	-e "s@%SERVER%@$SERVER@g" \
+	-e "s@%LOCALNET%@$LOCALNET@g" \
+	-e "s@%ENGINE%@$ENGINE@g" \
+	-e "s@GROUPS=GROUP1 GROUP2 GROUP3@\#GROUPS=GROUP1 GROUP2 GROUP3@g" \
+	-e "s@GROUP1=%GROUP1%@\#GROUP1=comp1 comp2@g" \
+	-e "s@GROUP2=%GROUP2%@\#GROUP2=comp3 comp4@g" \
+	-e "s@GROUP3=%GROUP3%@\#GROUP3=comp5 comp6@g" \
+	-e "s@USERS=%FREE%@USERS=$FREE@g" \
+	< $CFGDIR/tcpquota.cf > $TMP_FILE
+
+    chmod 644 $TMP_FILE
+
+    mv $CFGDIR/tcpquota.cf $CFGDIR/tcpquota.cf.old
+    mv $TMP_FILE $CFGDIR/tcpquota.cf
+
+    echo
+    echo "Now, you can edit the file $CFGDIR/tcpquota.cf"
+    echo "to fine tune you configuration, but it will work as is..."
+    echo
+
+    exit 0
+else
+    main
+fi

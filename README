@@ -1,0 +1,25 @@
+This is TCPQuota, a  program that logs all  foreign TCP activity using
+'/proc/net/*' and writes to the mySQL database 'tcpquota'.
+
+  The program is made for those who have a local network with a server
+that also functions  as a Internet  gateway (among other things).  The
+server runs diald, for  example, which does the actual dial-on-demand,
+and this package debits each  user, whether from the  server or from a
+masqueraded host (program includes masquerade code).
+
+  All  a user from inside the  gateway/firewall have to  do is run the
+command 'tcp_masq_openhost' (or the link 'openhost'), and the hostname
+and username  is masqueraded  and debited according  to the  time they
+spend calling out.
+
+  This   software  is in  use daily  at  CCW  (Computer  Club West) in
+Gothenburg, Sweden, and our phone bill depend on it...
+
+  Any bug   reports   or other enquires should      be sent ether   to
+turbo@tripnet.se       or       to     the            mailing     list
+tcpquota@papadoc.nocrew.org. To subscribe to this list, send a mail to
+tcpquota-subscribe@papadoc.nocrew.org.  We would really appreciate any
+input on this, so that we can improve on it's performance.
+
+Regards, Turbo Fredriksson
+         turbo@tripnet.se

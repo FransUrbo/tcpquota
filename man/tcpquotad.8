@@ -1,0 +1,271 @@
+.TH TCPQUOTAD 8 "TCPQuota Utilities" "FSF" \" -*- nroff -*-
+.SH NAME
+.B tcpquotad
+\- The TCPQuota daemon.
+.SH SYNOPSIS
+.B tcpquotad
+[options]
+.SH DESCRIPTION
+This is the engine of the TCPQuota system. It checks
+the files in '/proc/net/' for connects to the outside
+world and the mSQL tables 'allowed' and 'masq'. The
+daemon closes a host if it is not listed in the mSQL
+table 'masq', it kills a users processes if the user
+is not allowed to use the TCP link _OR_ if the user
+have gone below the minimum quota value.
+.SH NOTES
+The following signals have the specified effect when sent to the server
+process using the kill(1) command:
+
+SIGHUP
+.br
+          Causes server to reload the configuration file.
+
+SIGTERM
+SIGINT
+SIGQUIT
+SIGKILL
+.br
+          Causes the server to clean the firewall entries
+          and the masquerading table from entries, and to
+          exit cleanly
+
+SIGUSR1
+.br
+          Turns on debugging
+
+SIGUSR2
+.br
+          Turns off debugging
+.SH MSQL TABLES
+.B tcptab
+- This is the main quota table in the database, this contains
+the columns: name and quota.
+.br
+
+.I name
+- contains the username of the user allowed
+.br
+.I quota
+- contains the quota points of the user allowed
+This is measured in seconds.
+.br
+
+.B allowed
+- This is the table that holds the username of the users
+that are allowed to use the 'Net link.
+A user can exist in the
+.I tcptab
+table
+.B without
+being registered here. This is so that one can turn off a
+user, without removing it's points.
+It only contain one column: name.
+.br
+
+.I name
+- contains the username of the user allowed
+.br
+
+.B periodtab
+- xx
+.br
+
+.B masq
+- This is the table that holds the information on which
+host's and user's that the firewall is opened for.
+If one, for example executes the program
+.I openfw
+without parameters, it checks the file
+.I /etc/tcpquota/tcpquota.cf
+for the lines:
+.br
+
+	GROUPS=GROUP1
+.br
+	GROUP1=xxx yyy zzz
+
+Which means that there are one computer group (GROUP1)
+which contains the host's
+.B xxx, yyy
+and
+.B zzz.
+If you have logged in on the firewall from host
+.B zzz
+it opens the host's xxx, yyy and zzz for 'Net access
+for free (it depits the TCPQuota user 'free', which
+does not need to be an existing system user). This
+user can go under any value you set for
+.B MIN_QUOTA
+in the config file. This table contains the columns:
+host, name, cnts, tic, counter, open and free
+.br
+
+.I host
+- Is the IP nummer of the host that the firewall is
+opened for.
+.br
+.I name
+- Is the username of the user that have opened the
+firewall for the specified host.
+.br
+.I cnts
+- Number of connects for the specified host
+.br
+.I tic
+- Number of ticks since the table was uppdated
+.br
+.I counter
+- ....
+.br
+.I open
+- This is for used by the support programs, 
+.B openfw
+and
+.B openhost
+to trigger the opening/closing of the firewall.
+.br
+
+	If the support programs write a:
+.br
+.I
+	3
+- means that the firewall should be closed.
+.br
+.I
+	2
+- means that it should be opened.
+.br
+
+	And the daemon writes a:
+.br
+.I
+	1
+- the firewall is opened.
+.br
+.I
+	0
+- the firewall is closed.
+.br
+
+.I free
+- This is 1 if the user is allowed free access to the link
+and 0 if not...
+
+.B logging
+- Contains the logging about who have changed the TCPQuota
+database when...
+.br
+This table contains the columns:
+when, user and action
+.br
+
+.I when
+- Is the date when the database administrator have
+added/removed/changed quota points for another user
+.br
+.I user
+- The name of the database administrator that have
+changed the database
+.br
+.I action
+- What have the administrator done?
+.br
+
+.B logging_openfw
+- Contains the logging about who have opened/closed
+the firewall for free/admin access when...
+.br
+This table contains the columns:
+when, user and action
+.br
+
+.I when
+- Is the date when the database administrator have
+opened/closed the firewall for access...
+.br
+.I user
+- The name of the person that have opened/closed
+the firewall
+.br
+.I action
+- What have the administrator done (opened/closed,
+which set of computers)?
+.br
+
+.SH MSQL EXAMPLE
+Running msql (1) one can do:
+
+.B
+	SELECT quota FROM tcptab WHERE name LIKE 'free'\\\\g
+
+And you'll get something like this:
+
+ +----------+
+ | quota    |
+ +----------+
+ | -1008888 |
+ +----------+
+
+This is the number of quota points the user have left
+to spend... (In this perticular example, you'll get a
+negative value, which means that this is how much the
+user have spend...)
+
+.B
+	SELECT masq.host, tcptab.name, tcptab.quota FROM
+.B
+	tcptab, masq WHERE masq.host LIKE '42.42.40.66
+.B
+	AND tcptab.name LIKE 'free'\\\\g
+
+You'll get an output something like this:
+
+ +-----------------+----------------------+----------+
+ | host            | name                 | quota    |
+ +-----------------+----------------------+----------+
+ | 42.42.40.66     | free                 | -1008888 |
+ +-----------------+----------------------+----------+
+
+This means that the user
+.B free
+is allowed free access from host
+.B 42.42.40.66
+and have accumulated a negative quota value of
+.B 1008888
+points (seconds).
+
+You naturally have to exchange the IP number and username
+to
+.B your
+values... For more information on how to use mSQL can be
+found in the manual page for msql.
+
+.SH FILES
+.B /etc/tcpquota/tcpquota.cf
+- Main configuration file for the whole TCPQuota system
+
+.B /etc/tcpquota/tcpquota.cf.debug
+- Configuration file used when
+.I started
+in debug mode
+
+.B /etc/init.d/tcpquota.init
+- Used to start and stop the daemon at boot time
+
+.B /etc/cron.weekly/tcpquotad
+- Cron script to rotate the tcpquota log files
+
+.B /var/log/tcpquotad.log
+- Log file for the daemon
+.SH OPTIONS
+.TP
+.I "\-\-debug"
+Run the daemon in debug mode, do not fork, print extra
+debug output.
+.SH SEE ALSO
+tcpquota.cf(5), msql(5), relshow(1)
+.SH AUTHOR
+Turbo Fredriksson, <turbo@tripnet.se>
+.br
+Martin Budsjoe, <marbud@tripnet.se>

@@ -1,0 +1,280 @@
+#!/bin/sh
+
+set -e
+
+if [ "$CFGDIR" = "" ]; then
+    CFGDIR=/etc/tcpquota
+fi
+
+if [ "$LIBDIR" = "" ]; then
+    LIBDIR=/usr/lib/tcpquota
+fi
+
+case "$1" in
+    configure)
+	echo
+
+	# ===========================
+
+	# Re-/Configure for this specific host...
+	if [ -f $CFGDIR/tcpquota.cf ] && grep -q %SERVER% $CFGDIR/tcpquota.cf; then
+	    echo
+	    echo "The package must be reconfigured for your host to be able to"
+	    echo "work propperly. You have to tell it which SQL server to use, and"
+	    echo "where to find it etc..."
+
+	    $LIBDIR/tcpquotaconfig
+	else
+	    # Fix a problem with a previous bug, where the init script was named
+	    # wrong.
+	    if [ -f /etc/init.d/tcpquotad ]; then
+		rm /etc/init.d/tcpquotad
+	    fi
+
+	    # Does the database exist, or should we create one?
+	    if ! `mysqlshow | grep -q tcpquota`; then
+		echo
+		echo "TCPQuota have been configured by you or by a script earlier, but"
+		echo "you now have the option to use ether a mSQL or a mySQL server..."
+		echo
+		echo "Would you like to reconfigure the package (if not, you can copy"
+		echo "your old database with the following command: "
+		echo 
+		echo "  \`mysql create tcpquota; msqldump tcpquota | mysql tcpquota\'"
+		echo
+		echo "and then restart your TCPQuota and mySQL daemons..."
+		echo
+		read -p "Would you like to reconfigure? [y/N] " s
+		if [ "$s" = "y" -o "$s" = "Y" ]; then
+		    $LIBDIR/tcpquotaconfig
+
+		    # Create the mySQL database...
+		    echo -n "Creating the tcpquota mySQL database... "
+		    mysqladmin -u $ADMIN -p $PASSWD create tcpquota > /dev/null 2>&1
+
+		    # Try to move the mSQL database to mySQL...
+		    (msqldump tcpquota | mysql -u $ADMIN -p $PASSWD tcpquota) > /dev/null 2>&1
+
+		    echo "done."
+
+		    echo -n "Restarting the mySQL daemon...                 "
+		    mysqladmin -u $ADMIN -p $PASSWD reload > /dev/null 2>&1
+		    echo "done."
+		fi
+
+		echo
+		echo "TCPQuota should be restarted for the new version to be used."
+		read -p "Would you like to restart TCPQuota now [Y/n] " s
+		if [ "$s" != "n" -a "$s" != "N" ]; then
+		    /etc/init.d/tcpquotad restart
+		else
+		    echo "Oki, you can do that later by issuing the command:"
+		    echo
+		    echo "  /etc/init.d/tcpquotad restart"
+		    echo
+		    echo "(or if it is not started, /etc/init.d/tcpquotad start)"
+		    echo
+		fi
+
+		exit 0
+	    fi
+	fi
+
+	# ===========================
+
+	ENGINE=`grep ENGINE $CFGDIR/tcpquota.cf | awk -F= '{print $2}'`
+
+	if [ "$ENGINE" = "mSQL" ]; then
+	    # We should check for a mSQL database...
+
+	    if [ -f /etc/msql.acl ] && ! grep -q tcpquota /etc/msql.acl; then
+		# Create the mSQL database...
+		echo -n "Creating the tcpquota mSQL database config... "
+
+		# Create the config file entry...
+		cat >>/etc/msql.acl <<EOF
+
+database=tcpquota
+read=*
+write=root
+host=*
+access=local,remote
+
+EOF
+		echo "done."
+	    else
+		echo "The entry for tcpquota already exists in \`/etc/msql.acl', good..."
+	    fi
+
+	    chown msql.msql /etc/msql.acl
+
+	    # Does the database exist, or should we create one?
+	    if ! `relshow | grep -q tcpquota`; then
+		# Does not exists, create and configure one...
+
+		echo -n "Configuring the actual database...            "
+
+		# Create the database...
+		su msql -c "/usr/sbin/msqladmin create tcpquota" >/dev/null 2>&1
+
+		# Fill the database with tables...
+		if [ -f $LIBDIR/create_database.sql ]; then
+		    cat $LIBDIR/create_database.sql | msql tcpquota > /dev/null 2>&1
+		fi
+
+		echo "done."
+
+		echo -n "Restarting the mSQL daemon...                 "
+		su msql -c "/usr/sbin/msqladmin reload" > /dev/null 2>&1
+		echo "done."
+	    else
+		# Does exists, make sure it's not an older one...
+
+		echo "The tcpquota database already exist at the mSQL server,"
+		echo -n "make sure it contains all the relevant columns... "
+
+		# -------------------
+
+		if ! `msqldump tcpquota masq | grep -q 'open INT'`; then
+		    echo -n " nope, adding the column 'open'... "
+		    TMP_FILE=`mktemp -q /tmp/$0.XXXXXX`
+		    if [ $? -ne 0 ]; then
+			echo "$0: Can't create temp file, exiting..."
+			exit 1
+		    fi
+
+		    # Get a dump of the current table...
+		    msqldump tcpquota masq > $TMP_FILE
+
+		    # Drop the current table...
+		    cat <<EOF | msql tcpquota > /dev/null 2>&1
+drop table masq\g
+EOF
+
+		    # Change/Add a column with value...
+		    sed -e 's/count INT/counter INT/' \
+			-e 's/counter INT/counter INT, open INT/' \
+			-e 's/)\\g/\,0)\\g/' \
+			< $TMP_FILE | msql tcpquota > /dev/null 2>&1
+
+		    # Remove the temp file...
+		    rm -f $TMP_FILE
+
+		    echo "done."
+		else
+		    echo "yes, good!"
+		fi
+	    fi
+	elif [ "$ENGINE" = "mysql" ]; then
+	    # We should check for a mySQL database...
+
+	    # Double check to see if we ever had a tcpquota database in a mSQL
+	    # server...
+	    if [ -f /etc/msql.acl ] && grep -q tcpquota /etc/msql.acl; then
+		if [ -x /usr/bin/msql -a -x /usr/bin/mysql ]; then
+		    BOTH_INSTALLED=yes
+		else
+		    BOTH_INSTALLED=no
+		fi
+
+		echo "I see that you have been using mSQL earlier, and now you"
+		echo "have told me to use mySQL."
+		echo
+
+		if [ "$BOTH_INSTALLED" = "yes" ]; then
+		    echo "You have both mysql AND msql installed, so I can transfer"
+		    echo "the database from mSQL to mySQL if you prefere to keep your"
+		    echo "old database if you previously where using mSQL. Use t or T"
+		    echo -n "to transfer, and f or F to start with a fresh database. [Transfer/Fresh]"
+		    read s
+
+		    if [ "$s" = "t" -o "$s" = "T" ]; then
+			TRANSFER=yes
+		    else
+			TRANSFER=no
+		    fi
+		else
+		    echo "You don't have both the mysql AND msql packages installed, so"
+		    echo "I will not be able to transfer the database for you. I will"
+		    echo "create a empty one for you, which you can populate as you see"
+		    echo "fit."
+
+		    TRANSFER=no
+		fi
+	    else
+		TRANSFER=no
+	    fi
+
+	    # Does the database exist, or should we create one?
+	    if ! `mysqlshow | grep -q tcpquota`; then
+		# Create the mySQL database...
+		echo -n "Creating the tcpquota mySQL database... "
+		mysqladmin -u $ADMIN -p $PASSWD create tcpquota > /dev/null 2>&1
+
+		if [ "$TRANSFER" = "no" ]; then
+		    # Fill the database with tables...
+		    if [ -f $LIBDIR/create_database.sql ]; then
+			cat $LIBDIR/create_database.sql | \
+			mysql -u $ADMIN -p $PASSWD tcpquota > /dev/null 2>&1
+		    fi
+		else
+		    # Try to move the mSQL database to mySQL...
+		    (msqldump tcpquota | mysql -u $ADMIN -p $PASSWD tcpquota) > /dev/null 2>&1
+		fi
+
+		echo "done."
+
+
+		echo -n "Restarting the mySQL daemon...                 "
+		mysqladmin -u $ADMIN -p $PASSWD reload > /dev/null 2>&1
+		echo "done."
+	    else
+		echo "The tcpquota database already exists at mySQL server, good..."
+	    fi
+	else
+	    echo "No such database engine $ENGINE..."
+	    exit 1
+	fi
+
+	# ===========================
+
+	read -p "Would you like to have TCPQuota started at bootup? [Y/n] " s
+	if [ "$s" != "n" -a "$s" != "N" ]; then
+	    echo -n "Updating runlevels...                         "
+	    /usr/sbin/update-rc.d tcpquota defaults 92 > /dev/null 2>&1
+	    echo "done."
+	fi
+
+	echo -n "Touching PID and LOG files...                 "
+	touch /var/run/tcpquotad.pid
+	touch /var/log/tcpquotad.log
+	echo "done."
+
+	if [ -f $CFGDIR/tcpquota.cf ] && ! grep -q %SERVER% $CFGDIR/tcpquota.cf; then
+	    echo
+	    echo
+	    echo "TCPQuota is now configured and ready to rock."
+	    read -p "Would you like to start TCPQuota now [y/N] " s
+
+	    if [ "$s" = "y" -o "$s" = "Y" ]; then
+		/etc/init.d/tcpquotad start
+	    else
+		echo "Oki, you can do that later by issuing the command:"
+		echo
+		echo "  /etc/init.d/tcpquotad start"
+		echo
+	    fi
+	fi
+	;;
+
+    abort-upgrade|abort-deconfigure|abort-remove)
+	# how did we got here? Force a non-zero exit code
+	exit 1
+	;;
+
+    *)
+	echo "postinst called with unkown argument: \$1" >&2
+	;;
+esac
+
+exit 0

@@ -1,0 +1,277 @@
+#!/usr/bin/perl -w
+#
+#
+#
+# Program för periodisering av quota.. Skall köras vid skapning av databas
+# innan tcpquota går igång. Skall sedan köras när man vill periodisera.
+#
+# $Header: /usr/lib/cvs/root/tcpquota/tcpperiod,v 1.15 1998/08/01 19:57:55 turbo Exp $
+#
+# $Log: tcpperiod,v $
+# Revision 1.15  1998/08/01 19:57:55  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.14  1998/05/25 16:07:52  turbo
+# * Moved the 'check_periods()' to 'chktcpquota' instead, more appropriate there...
+#
+# Revision 1.13  1998/05/24 20:28:36  turbo
+# Only add the extracted quota if it is a positive number (when we
+# are checking the periods, and how much we owe people etc...)
+#
+# Revision 1.12  1998/05/22 13:58:56  turbo
+# * If we are debugging, use the debug config file...
+# * Added the new function, 'check_periods()', which outputs a total of unused
+#   tcpquota, for everyone exept the free users, and one for the free users.
+#
+# Revision 1.11  1998/03/31 12:16:05  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.10  1998/03/14 23:02:58  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.9  1997/11/26 21:29:55  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.8  1997/11/04 14:53:33  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.7  1997/10/16 18:49:48  turbo
+# * Removed some fucked up CVS header lines...
+# * Removed the function 'get_timestring()', it is now located in the library...
+#
+# Revision 1.6  1997/10/05 21:26:42  turbo
+# Ooppps... logg is spelled with two g's... *blush*
+#
+# Revision 1.5  1997/08/17 17:29:13  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#
+#
+
+# Include some magic...
+use DBI;
+use POSIX;
+use English;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+
+$DEBUG=0;
+$DEBUG=$ENV{DEBUG} if (defined $ENV{DEBUG});
+$PROG="tcpperiod";
+$CF_FILE="tcpquota.cf";
+
+%cf=(); # config array.
+
+$CF_FILE="tcpquota.cf.debug" if( $DEBUG );
+&readconfig("$conf_dir/$CF_FILE",$PROG);
+
+#
+# Loggning avstängt.. Det loggas så det räcker redan ändå..
+#
+# Initialize logging
+#open(LOG, ">>$cf{'LOGFILE'}")
+#  || die( "Could not open the $cf{'LOGFILE'} log file...\n" );
+#
+#
+#
+
+
+
+# Open up the msql connection...
+&open_sql_server();
+
+if ($#ARGV != -1) {
+    if ($ARGV[0] eq '-l' || $ARGV[0] eq '--list') {
+	&list_periods(); 
+    } elsif($ARGV[0] eq '--help' || $ARGV[0] eq '-h' || $ARGV[0] eq '?' ) {
+	print "\nUse: tcpperiod --list  (or tcpperiod -l)   Lists the different periods\n";
+	exit(0);
+    } else {
+	die "wrong option $ARGV[0].\n";
+    }
+} else {
+  
+  $period=$id=$quota=$quota_sek=0;
+  
+  $prev=$pid=$pquota=$pquota_sek=0;
+  
+  
+  
+  ($pid,$prev,$pquota)=getcurrent_period();
+  $pquota_sek=$pquota / 60 * $cf{'RATE_QUOTA'}; # SEK.
+  
+  $id=$pid+1;
+  $period=strftime("%Y%m%d %H%M",localtime);
+  $quota_sek=$quota / 60 * $cf{'RATE_QUOTA'}; # SEK.
+  
+  logg(0,"tcpperiod startat.\n");
+
+  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+      print "Om du trycker return nu kommer vi att avsluta perioden från \n";
+      print "$prev($pid) -> $period($id) = $pquota ($pquota_sek $cf{'MONEY_VALUE'}).\n";
+      print "Ny period $period($id)=$quota -> sätts till $quota ($quota_sek $cf{'MONEY_VALUE'}).\n";
+      print "OM du trycker return här.. Om det inte är din avsikt, tryck ctrl-c\n\n";
+  } else {
+      print "If you press RETURN now, we will end the period from \n";
+      print "$prev($pid) -> $period($id) = $pquota ($pquota_sek $cf{'MONEY_VALUE'}).\n";
+      print "New period $period($id)=$quota -> will be set to $quota ($quota_sek $cf{'MONEY_VALUE'}).\n";
+      print "IF you press RETURN here... If that wasn't your intention, press <CTRL-C>\n\n";
+  }
+  
+  
+  <>;				# vänta på return...
+  
+  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+      print "Periodiserar...\n";
+      &logg(0,"Periodiserar på $period...\n");
+  } else {
+      print "Periodizing...\n";
+      &logg(0,"Periodizing period $period...\n");
+  }
+
+  &newcurrent_period($id,$period,$quota);
+
+  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+      &logg(0,"Periodiserat på $period...\n");
+      print "Periodiserat...\n";
+  } else {
+      &logg(0, "Periodized period $period...\n");
+      print "Periodized...\n";
+  }
+}
+
+exit 0;
+
+
+
+#
+# Subs..
+#
+#
+
+
+sub list_periods() {
+  local($sth);
+  local($cid,$cperiod,$cquota);
+  local($id,$period,$quota);
+  local($quotatot)=0;
+  local($c);
+  ($cid,$cperiod,$cquota)=&getcurrent_period();
+
+  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+      print "Listar alla perioder upp till $cperiod\n\n";
+      printf("%3s %-20s %8s %8s\n", "Nr", "Period", "Quota", $cf{'MONEY_VALUE'});
+  } else {
+      print "Listing all periods up to $cperiod\n\n";
+      printf("%3s %-20s %8s %8s\n", "No", "Period", "Quota", $cf{'MONEY_VALUE'});
+  }
+
+  printf("================================================================\n");
+  for ($c=0; $c<=$cid; $c++) {
+    $sth=$dbh->prepare("select id,period,quota 
+                           from periodtab 
+                           where id = $c");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+
+    ($id,$period,$quota)=$sth->fetchrow_array;
+    $quotatot+=$quota;
+    printf("%3d %-20s %8d %8.2f\n", $id, $period, 
+	   $quota, $quota/60*$cf{RATE_QUOTA});
+    
+  }
+
+  printf("================================================================\n");
+  printf("%-24s %8d %8.2f\n", "Total:", 
+	 $quotatot, $quotatot/60*$cf{RATE_QUOTA});
+}
+
+
+#
+# Shared subs..
+#
+#
+
+sub getcurrent_period() {
+  local($sth);
+  local($id,$period,$quota)=(-1,"START",0);
+
+  $sth=$dbh->prepare("select id from periodtab");
+  $sth->execute || die "Could not execute query: $sth->errstr";
+  if($sth->rows) {
+      my($maxid)=0;
+      my($numrows);
+      $numrows=$sth->rows;
+
+      while( $numrows--) {
+	  $id=$sth->fetchrow_array;
+	  $maxid=$id  if ($id > $maxid);
+      }
+
+      $sth=$dbh->prepare("select id,period,quota
+                           from periodtab
+                           where id=$maxid");
+      $sth->execute || die "Can not fetch current period: $sth->errstr";
+
+      ($id,$period,$quota)=$sth->fetchrow_array; 
+  }
+  return ($id,$period,$quota);
+}
+
+sub setcurrent_period( $$$ ) {
+  local($id,$period,$quota)=@_;
+  local($sth);
+  
+  $sth=$dbh->prepare("update periodtab
+                         set quota = $quota
+                         where id = $id");
+  $sth->execute || die "Error when updating period $period($id): $sth->errstr";
+}
+		 
+
+sub newcurrent_period( $$$ ) {
+  local($id,$period,$quota)=@_;
+  local($sth);
+  $sth=$dbh->prepare("insert into periodtab
+                         values ($id,'$period',$quota)");
+  $sth->execute || die "Error when inserting period $period($id): $sth->errstr";
+}
+
+sub logg {
+#  local($level,$msg)=@_;
+#  if($level > 0 || $DEBUG ) {
+#    local($string);
+#    $string="(".get_timestring().") ".$msg;
+#    print LOG $string;
+#    print $string if ($DEBUG);
+#  }
+}

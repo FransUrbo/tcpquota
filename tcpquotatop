@@ -1,0 +1,231 @@
+#!/usr/bin/perl -w 
+#
+#
+#
+#
+# Tcpquotatop.. Visar vilka som blir debiterade tcpquota just nu, interaktivt.
+#
+# $Header: /usr/lib/cvs/root/tcpquota/tcpquotatop,v 1.16 1998/08/01 19:57:58 turbo Exp $
+#
+# $Log: tcpquotatop,v $
+# Revision 1.16  1998/08/01 19:57:58  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.15  1998/03/31 12:16:09  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.14  1998/03/14 23:02:59  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.13  1997/11/26 21:29:57  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.12  1997/11/04 14:53:33  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.11  1997/10/02 11:57:19  turbo
+# Found a bugg conserning a money variable...
+#
+# Revision 1.10  1997/08/17 17:29:14  turbo
+# * We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#
+# Revision 1.9  1997/04/13 03:54:30  marbud
+# forsok till hel-krona-pling, men det funkar inte an.. hmmm
+#
+# Revision 1.8  1997/04/13 03:22:42  marbud
+# Oppss. = bugg vid gamforelse..
+#
+# Revision 1.7  1997/04/13 03:21:34  marbud
+# ny verre som klarar haller reda pa hur manga kronor som det har gatt at
+# totalt sedan vi startade..
+#
+# Revision 1.6  1997/04/13 00:40:43  marbud
+# Snyggar utskrift. Fick ordning på lyttals utskrifterna oxo, så de hamna
+# under rubrikerna som de bör.
+#
+# Revision 1.5  1997/04/12 20:33:37  marbud
+# Nu funkar SEK visarna, både total och diffar.
+#
+# Revision 1.4  1997/04/12 20:27:34  marbud
+# Total summor, samt diff SEK uträknad.. Hmm funkar inte riktigt än, men
+# det kommer nog snart..
+#
+# Revision 1.3  1997/04/12 19:49:25  marbud
+# Tillsnyggad, och visar nu vilken period som avses..
+#
+# Revision 1.2  1997/04/12 19:24:01  marbud
+# Första versionen som går att använda.. Verkar funka ganska bra..
+#
+# Revision 1.1  1997/04/12 18:55:49  marbud
+# Lagt till tcpquotatop i Makefile
+#
+# tcpquota top är en ny produkt som visar vilka som debiteras och hur mycket.
+#
+#
+#
+
+
+use DBI;
+use POSIX;
+use English;
+
+package main;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+
+$VERSION='$Revision: 1.16 $ ';
+
+$DEBUG=0;
+
+$PROG="tcpquotatop";
+$CF_FILE="tcpquota.cf";
+$CF_FILE="tcpquota.debug.cf" if (defined $ENV{DEBUG} or $DEBUG);
+%cf=();				# config array.
+&readconfig("$conf_dir/$CF_FILE",$PROG);
+
+
+$dbh="";			# holds our connections to msql..
+$sth="";			# holds general query handle...
+
+
+sub init() {
+  $OUTPUT_AUTOFLUSH=1;
+  print "Tcpquotatop $VERSION\n";
+  print "Connecting to database.\n";
+  
+  # Open up the database connection...
+  &open_sql_server();
+}
+
+
+sub fetch_quota_snapshot() {
+  local($name,$quota);
+  local($sth);
+  local(%tmp)=();
+
+  $sth= $dbh->prepare("select name, quota from tcptab");
+  $sth->execute || die "Can't talk to the database server.\n";
+
+  while ( ($name,$quota)= $sth->fetchrow_array ) {
+    $tmp{$name}=$quota;
+  }
+  return %tmp;
+}
+
+
+
+sub main() {
+  local(%all_user,%act_user);
+  local($sth,%new);
+  local($starttime);
+  local(@tmp,$diff,$sleeptime);
+  local($totalMONdiff, $totalMONdiffint)=(0,0);
+
+  $sleeptime=10;
+  print "Fetching start quotas\n";
+  # fill upp our arrays.
+  %act_user=();
+  %all_user=&fetch_quota_snapshot();
+  @starttime=localtime;
+  
+  print "Waiting for the next period.\n";
+  sleep $sleeptime;
+  $OUTPUT_AUTOFLUSH=0;
+
+  while (1) {
+    %new=&fetch_quota_snapshot();
+    
+    foreach (keys(%new)) {
+      if ($new{$_} != $all_user{$_}) {
+	$act_user{$_}=$all_user{$_};
+      }
+    }
+    
+    system('/usr/bin/clear');
+    print "		tcpquotatop	$VERSION\n";
+    printf "	Start:%s      	       Now:%s\n\n",
+    	   strftime("%Y-%m-%d %H:%M.%S", @starttime),
+           strftime("%Y-%m-%d %H:%M.%S", localtime);
+    
+    printf "%-15s %7s %7s %9s %9s\n", 
+    "Username", "quota", "diff", "$cf{'MONEY_VALUE'}", "$cf{'MONEY_VALUE'} diff";
+    print "----------------------------------------------------------------------\n";
+    
+    foreach (sort {$act_user{$a} <=> $act_user{$b} } keys(%act_user)) {
+      $diff=$new{$_} - $all_user{$_};
+      printf "%-15s %7d %7d %9.3f %9.3f\n", $_, $new{$_},
+      $diff, - $new{$_} / 60 * $cf{'RATE_QUOTA'},
+      $diff / 60 * $cf{'RATE_QUOTA'};
+    }
+    
+    # use new values next time.
+    print "----------------------------------------------------------------------\n";
+
+    {
+      local($t_quota,$t_diff,$t_MON,$t_MONdiff)=(0,0,0,0);
+      # calc sums
+      foreach (keys(%act_user)) {
+	$t_quota +=$act_user{$_}; 
+	$t_diff +=$new{$_} - $all_user{$_};
+	$t_MON += - $new{$_} / 60 * $cf{'RATE_QUOTA'};
+	$t_MONdiff += ($new{$_} - $all_user{$_}) / 60 * $cf{'RATE_QUOTA'};
+      }
+      
+      printf "%-15s %7d %7d %9.3f %9.3f\n", "Total:", $t_quota,
+      $t_diff, $t_MON, $t_MONdiff;
+      $totalMONdiff+=$t_MONdiff;
+    }
+    @tmp=keys(%act_user);
+
+    $OUTPUT_AUTOFLUSH=1;
+    # let's sound the bell for every even crown (or whatever). 
+    if ( $totalMONdiffint != int($totalMONdiff)) {
+      print "";
+      $totalMONdiffint=int($totalMONdiff);
+    }
+    printf "	Total %d active users used %9.3f $cf{'MONEY_VALUE'} since starttime.", 
+    $#tmp + 1, $totalMONdiff;
+    $OUTPUT_AUTOFLUSH=0;
+    %all_user=%new;
+    
+    # don't rush it..
+    sleep $sleeptime;
+
+
+  }
+}
+
+&init();
+&main();

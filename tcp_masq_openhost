@@ -1,0 +1,653 @@
+#!/usr/bin/perl -w
+
+######################################################################
+#
+# Öppnar för host access genom masquerading genom stalin.
+#
+# Vi tar reda på clientens ip och öppnar för masquerading.
+#
+# Vi använder databasen tcpquota i Msql för att prata med tcpquotad.
+# Tabellen masq uppdateras och underhålls av detta programm.. 
+#
+# ipfwadm körs för att öppna och stänga nät access..
+#
+#
+# OBS detta progg skall körs SUID och ägas av root! OBS!
+#
+# $Header: /usr/lib/cvs/root/tcpquota/tcp_masq_openhost,v 1.57 1998/09/12 02:09:31 turbo Exp $
+#
+# $Log: tcp_masq_openhost,v $
+# Revision 1.57  1998/09/12 02:09:31  turbo
+# * Center space the 'Please press ENTER to end ...', also have an empty line
+#   after this line, so it is clearly visible.
+# * Don't use 'query', use 'prepare'... query was the old way...
+#
+# Revision 1.56  1998/09/03 01:25:03  turbo
+# Fixed some newline errors.
+#
+# Revision 1.55  1998/08/01 19:57:54  turbo
+# * First quick port to use the generic database interface 'DBI' instead of
+#   the 'Msql' interface. This is so that we can go from using mSQL as
+#   database, to use the much quicker mySQL server. But by using this generic
+#   interface, we can have both... More or less :)
+# # Any reference to the Msql function 'query' had to be replaced with, first
+#   a 'prepare' then a 'execute'. If the execute fails, then die, or log, or
+#   what evere takes us fancy...
+# * Any reference to the Msql functions 'fetchrow' and 'numrows', had to be
+#   replaced with 'fetchrow_array' and 'rows'.
+# * Found a 'open_sql_server()' function in the 'tcp_masq_openfw' script. Move
+#   that to the library, so that we can reuse the function all over the board.
+# # Added a lot of '&' to the call of our own functions... They glow with such
+#   a pretty blue color in X... :)
+#
+# Revision 1.54  1998/05/29 14:15:28  turbo
+# Before telling a user he/she have gone under the minimum quota, check if
+# this user is on the 'free list'...
+#
+# Revision 1.53  1998/05/24 16:46:24  turbo
+# No default settings! Make sure we use those in the config file...
+#
+# Revision 1.52  1998/04/29 13:48:34  turbo
+# If we can not find the IP number to the host, return 0 (not -1), and output
+# a nice, and descriptive explanation to what's happening...
+#
+# Revision 1.51  1998/04/18 16:46:39  turbo
+# If someone/something (the daemon for example) have closed the firewall
+# for a user, the program should exit, and tell the user to restart...
+# Now it calls the new function 'send_message()' which prints both to
+# the terminal AND to winpopup if it can...
+#
+# Revision 1.50  1998/04/16 18:42:37  turbo
+# Fixed a bug that let the openhost (ut) to continue running even if someone/
+# something have closed the firewall. Now it quits cleanly if the entry in the
+# table have been removed, or the 'open' column is set to zero (= closed).
+#
+# Revision 1.49  1998/04/13 10:39:33  turbo
+# * The new mSQL engine does not understand the column name 'count', so it had
+#   to be renamed to 'counter', make sure we select on the correct name...
+#
+# Revision 1.48  1998/04/01 14:19:39  turbo
+# Make sure we load the config file BEFORE we greet... We need the lang
+# variable...
+#
+# Revision 1.47  1998/03/31 12:16:04  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.46  1998/03/31 12:01:57  turbo
+# Make sure we search and opens the correct config file,
+# set by the variables '{lib|conf}_dir' at the top...
+#
+# Revision 1.45  1998/03/31 11:07:24  turbo
+# We now call the function 'write_db()' with a new parameter,
+# 'wait', which means we should (or should not) wait for the
+# aqnowlagement...
+#
+# Revision 1.44  1998/03/17 21:54:28  turbo
+# * Make sure we die if we are not installed SUID (removed this,
+#   since I was planing to remove the requirement for running SUID,
+#   didn't work...)
+# * 'Fake' the name we are running as...
+#
+# Revision 1.43  1998/03/15 11:12:33  turbo
+# Fix for uninitialized variable when checking where a user are
+# comming from... Probably happens if the UTMP file is corrupt...
+#
+# Revision 1.42  1998/03/15 09:41:51  turbo
+# The binary does no longer need SUID, blush, should not exit
+# if not SUID...
+#
+# Revision 1.41  1998/03/14 23:02:58  turbo
+# If we can't open a connection to the mSQL database, say so and include the
+# information to _WHICH_ server we can not connect to...
+#
+# Revision 1.40  1998/03/14 17:37:26  turbo
+# * When requesting to open/close the firewall, make sure we are
+#   verbose when we write to the database...
+# * Some retabbing (this makes _me_ the 'owner' of those lines,
+#   me and marbud are fighting about who have written the most
+#   lines, I'm in a _BIG_ lead, just because of this... :)
+#
+# Revision 1.39  1998/03/13 20:10:44  turbo
+#   Don't call the functions '{open|close}_for_masq()', let the
+# daemon take care of that, we just write a 2 or 3 to the masq
+# table (the 'open' column) if we want the firewall opened or
+# closed...
+#   This could be taken care of in the function 'write_db()' (that
+# is defined in the library file...
+#
+# Revision 1.38  1998/01/07 15:28:40  turbo
+# Added the empty version variable, to make perl happy, it is initialised in
+# the library...
+#
+# Revision 1.37  1997/12/04 14:11:05  turbo
+# Got the fetching of the IP address from the utmp file to work, updated
+# the WHO variable and it's splitting accordingly...
+#
+# Revision 1.36  1997/12/02 19:01:12  turbo
+# Added the VERSION (CVS Revision) variable, used in the 'greet()' function
+#
+# Revision 1.35  1997/12/01 15:03:10  turbo
+# * Since we are using the utmp file to find out who's online, we need to
+#   include the POSIX stuff...
+# * Rewrote the function 'get_remote_ip()' a little to reflect the use of
+#   the utmp reading...
+# * Some how the writing to the loggfile, using '/usr/bin/logger' stopped
+#   working... Have to fix that some how...
+#
+# Revision 1.34  1997/11/26 21:48:21  turbo
+# We have the possibility to use a homemade function, 'get_online()', which
+# returns the users online right now, instead of using '/usr/bin/who'...
+#
+# Revision 1.33  1997/11/26 21:29:55  turbo
+# Removed a lot of config file variables, that could possibly confuse a new
+# user/admin of the package... We asume that whoever chooses to install the
+# package, use our default... If not, they can go in and change the stuff
+# themselvs!!
+#
+# Revision 1.32  1997/11/19 19:55:34  turbo
+# Instead of using '/usr/bin/host' to get the IP address of a host, use the
+# internal perlfunctions 'gethostbyname()' instead... Might make the program
+# a little faster, no overhead of starting an external program...
+#
+# Revision 1.31  1997/11/11 14:15:20  turbo
+# * Retabbing a little, easier to follow the code...
+# * Removed the function 'remove_from_db()', added the code to 'write_db()'
+#   instead (called with 'rem' as first param).
+# * Moved the functions write_db(), closedown(), open_for_masq() and
+#   close_for_masq() to the lib file, was needed elsewere to...
+#
+# Revision 1.30  1997/11/04 14:53:33  turbo
+# We should require './lib/tcpquota.pl' instead of 'lib/tcpquota.pl'...
+#
+# Revision 1.29  1997/10/16 18:48:54  turbo
+# * Removed some fucked up CVS header lines...
+# * Removed the function 'get_timestring()', it is now located in the library...
+#
+# Revision 1.28  1997/10/06 17:17:46  turbo
+# After I changed the variable MAX_QUOTA to MIN_QUOTA (which is more correct,
+# I forgot to change the refereces in this file... *blush*).
+#
+# Revision 1.27  1997/10/05 17:04:57  marbud
+# Ändrat regexp vid uthackning av hostnamn så den tillåter host:0.0 för
+# Xsessioner...
+#
+# Revision 1.26  1997/09/30 17:10:59  turbo
+# * You can not have a 'multiline' OR... ('open() || <multiline>').
+# * Make sure the tcp_masq_openhost is suid root...
+#
+# Revision 1.25  1997/08/17 17:29:12  turbo
+# * Moved some functions to the library file.
+# * Deleted some variables, they exists in the config file.
+# * Added the global config variables 'LANGUAGE' and 'MONEY_VALUE' in the
+#   config file...
+# * Changed some hardcoded site specific entries, and language. We can´t
+#   release it if much of it is specific to CCW...
+# * Made sure that all the script's understand '--help', '-h' and '?', just
+#   in case...
+# * Some of the config file variables can be used by all the scripts, therefor
+#   made non-program specific ('TABLE=xxx', instead of 'tcpquotad.TABLE=xxx').
+# * Fixed some calculation buggs in the admin program, and also more information
+#   in the menu.
+#
+# Revision 1.24  1997/07/06 12:21:10  marbud
+# Oppss.. Gammal bugg tillbaka.. :-)
+#
+# Revision 1.23  1997/07/06 10:57:50  marbud
+# Mergat två versioner.. Hö..
+#
+# Revision 1.22  1997/06/26 19:10:39  marbud
+# Lite mer uppsnyggning...
+#
+# Revision 1.21  1997/06/26 19:03:40  marbud
+# Mysko bugg.. Man skall inte sätta SIG{'CHLD'} och sedan göra en system
+# och förvänta sig att signalen inte kommer förän efter en fork lite
+# senare.. Mysko, då det vad jag vet inte har ändrats vid tillfället då
+# det slutade att fungera..
+# jaja Nu funkar det iaf.
+#
+# Revision 1.20  1997/06/13 23:36:20  marbud
+# Lagt till en schysst sökväg till stty kommandot, då det plötsligt
+# ballade ur och inte längre hittades utan sökväg.. (ganska naturligt,
+# men varför har det funkat förut?)
+#
+# Revision 1.19  1997/06/04 15:19:33  marbud
+# Lagt till så att tangentnedtryckningar inte ekas till skärmen..
+# Mindre risk för att utskriften skall bli förstörd...
+#
+# Revision 1.18  1997/02/07 03:59:32  marbud
+# lite om'ndingar av vad som skrivs p[ sk'rmen..
+#
+# Revision 1.17  1997/02/07 02:21:37  marbud
+# Nu utan tcp accouting.. Vi anvder ipfwadm -Ml for at veta om det
+# anvands eller ej...
+#
+# Revision 1.16  1997/02/07 00:51:44  marbud
+# Nu med ip accounting support... Hmmm .. Kanske det funkar som det 'r t'nkt..
+#
+# Revision 1.15  1997/01/23 18:08:48  marbud
+# Rättat några buggar.. mm.
+#
+# Revision 1.14  1997/01/21 19:22:42  marbud
+# Fixxat några buggar.. tcpquota fick en negation fel för sig, så den
+# talade glatt om att klubben var skyldig folk pengar..
+# tcp_masq_openhost spökar fortfarande. Mer loggning nu..
+#
+# Revision 1.13  1997/01/20 23:00:24  marbud
+# Rättat lite.. Kollade förut att MAX quota var större än vad vi hadde.. Lite
+# fel. Den måste vara mindre för att vi skall få köra. Fler support namn.. :-)
+#
+# Revision 1.12  1997/01/20 22:00:18  marbud
+# Lagt in support för config filen.. se init()... och readconfig()
+#
+# Revision 1.11  1997/01/20 18:57:08  marbud
+# Nu kollar vi vem det är som redan har öppnat för access om vi upptäcker
+# att det redan är öppnat..
+#
+# Revision 1.10  1997/01/20 18:47:35  marbud
+# Nu med loggning genom syslog.. pga jag hittade några fel.. Folk lyckas döda
+# den stackarn utan att den hinner radera sina spår efter sig.
+#
+# Revision 1.9  1997/01/19 05:23:29  marbud
+# Raderat lite gunk..
+#
+# Revision 1.8  1997/01/19 04:59:01  marbud
+# Japp. en "färdig" version..
+#
+# Revision 1.7  1997/01/19 04:31:11  marbud
+# Fixxat mer text mässiga grejjer.. Lite snyggare info på skärmen. Lite mer info
+# om att man faktistk kommer att betala oavsett om man surfar el dyl.
+#
+# Revision 1.6  1997/01/19 04:09:04  marbud
+# Första versionen som funkar med msql. Undrar dock varför msql kopplingen dör
+# med min child.. Hmm Knas..
+#
+# Revision 1.5  1997/01/19 01:14:17  marbud
+# Första versionen som funkar med ipfwadm.. Dock skapas inget i Msql än..
+#
+# Revision 1.4  1997/01/19 00:40:15  marbud
+# ytterligare lite nämare ett fungerade progg.. Tjo...
+#
+# Revision 1.3  1997/01/18 22:16:03  marbud
+# Lite fixxar med Revision: 1.x.. Alltid lite meck att få till i perl...
+#
+# Revision 1.2  1997/01/18 22:12:50  marbud
+# Första versionen.. Gör inget än så länge..
+#
+# Revision 1.1  1997/01/18 18:30:22  marbud
+# Hanterar masqueradings öppning för resp clients ip.
+#
+
+# Include some magic...
+
+use DBI;
+use POSIX;
+use English;
+
+$lib_dir  = "./lib";
+$conf_dir = "./confs";
+
+require "$lib_dir/tcpquota.pl";
+require "$lib_dir/utmp.ph";
+
+die "$PROG wrongfully installed, must be suid root!\n" if($EUID != 0);
+
+$VERSION=""; # Keep perl happy...
+$VERSION='$Revision: 1.57 $ ';
+%cf=(); # config
+
+&init();
+&greet();
+
+($name,$fullname) = &get_names();
+&logg(0,"Started by $name");
+
+die "You can NOT open for masquerading as root..." if ($name eq "root");
+
+$ip = &get_remote_ip($name,$fullname);
+&logg(0,"host $ip");
+
+# For some reason, you have to have 46 'EOF's here... Don't ask me, I'm only coding the bugger... :)
+$PROGRAM_NAME = "openhost $name\@$ip\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+# Open up the database connection...
+&open_sql_server();
+
+if (! &check_allowed($dbh, $name)) {
+    &write_db('add', $dbh, $ip, $name, 1, 1);
+    &logg(0,"add db");
+
+    if(! &wait_to_end_of_session() ) {
+	# We quit because someone/something have closed the firewall for this host...
+	&write_db('rem', $dbh, $ip, $name, 1, 1);
+	&logg(0,"remove db");
+	
+    }
+}
+&avsluta();
+
+
+# 
+# Funktioner..
+sub init {
+    $PROG="tcp_masq_openhost";
+    $CF_FILE="tcpquota.cf";
+    $CF_FILE="tcpquota.cf.debug" if (defined $ENV{DEBUG});
+
+    # Read configuration file...
+    &readconfig("$conf_dir/$CF_FILE",$PROG);
+
+    $DEBUG = 0;
+
+    # signal handlers
+    $ENV{'PATH'} = "/usr/bin";
+    $name     = "";
+    $fullname = "";
+    $ip       = 0;
+    $end      = 0; # flagga som flaggar för död.. :-)
+    
+    # Inget är skrivet till Msql av oss...
+    # Keep perl happy, it is only used once _IN THIS SCRIPT_
+    # But it is changed in the library...
+    $db_masq_written = 0; $db_masq_written = 0;
+
+    $SIG{'HUP'}  = 'hup_handler';
+    $SIG{'TERM'} = 'term_handler';
+    $SIG{'INT'}  = 'int_handler';
+}
+
+sub avsluta {
+    logg(0,"Quit.");
+    exit 0;
+}
+
+#
+# Alla Signal hanterare skall se till att städa i masq tabellen..
+sub hup_handler {
+    &write_db('rem', $dbh, $ip, $name, 1, 1);
+    &avsluta();
+}
+sub term_handler {
+    &write_db('rem', $dbh, $ip, $name, 1, 1);
+    &avsluta();
+}
+sub int_handler {
+    &write_db('rem', $dbh, $ip, $name, 1, 1);
+    &avsluta();
+}
+
+
+#sub funcs..
+
+# Vad heter vi som kör..
+sub get_names {
+    local($name,$fullname);
+    
+    # Fetch uid och euid...
+    
+    $name=(getpwuid($UID))[0]; # hämta vårt namn som kör.. 
+    $fullname=(getpwuid($UID))[6]; # hämta vårt namn..
+    $fullname=~ s/^(.*?),.*/$1/; # if( $fullname =~ /,/);
+
+    return ($name,$fullname)
+}
+
+
+
+#
+#
+# Får personen öppna?
+sub check_allowed {
+    local($db,$name)=@_;
+    local($sth);
+    
+    $sth=$dbh->prepare("select name from allowed where name = '$name'");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+    if(! $sth->fetchrow_array) {
+	if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	    print "Du har inte access till tcpquota... Ledsen.\n";
+	} else {
+	    print "You do not have tcpquota access.. Sorry.\n";
+	}
+
+	return 1;
+    }
+    # här får vi ev fel om personen inte än finnes i tcptab. men då är det OK.
+    #
+    $sth=$dbh->prepare("select quota from tcptab where name = '$name'");
+    $sth->execute || die "Could not execute query: $sth->errstr";
+    if($sth->rows) {
+	local($quota,$kronor);
+	$quota=$sth->fetchrow_array;
+	$kronor=int($quota / 60 * $cf{'RATE_QUOTA'});
+	if ($quota <= $cf{'MIN_QUOTA'}) {
+	    if(! &check_free_user($name) ) {
+		if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		    print "Du har gått under MIN quota. Den är just nu $cf{'MIN_QUOTA'} (ungerfär ".$cf{'MIN_QUOTA'}/60*$cf{'RATE_QUOTA'}.", du har $quota ($kronor $cf{'MONEY_VALUE'}))\n";
+		} else {
+		    print "You have gone under the MIN quota. MIN quota is right now $cf{'MIN_QUOTA'} (about ".$cf{'MIN_QUOTA'}/60*$cf{'RATE_QUOTA'}.", you have $quota ($kronor $cf{'MONEY_VALUE'})\n";
+		}
+
+		return 1;
+	    }
+	}
+    }
+    return 0;
+}
+
+# här skall vi lista ut vad vår maskin heter i detta fallet.. 
+# vi använder IP nummer, inte DNS namn. Får vi DNS namn, så 
+# slår vi upp IP i DNSen..
+#
+# Vi använder förnärvarande who för att få reda på remote ip..
+sub get_remote_ip {
+    local($name,$fullname)=@_;
+    my($host, $ip, $tty, $dummy, $user_name, $user_host, $user_tty);
+
+    open(TTY,"/usr/bin/tty|") || die "Can not open tty...";
+    $tty=<TTY>;
+    close(TTY);
+    chop($tty);
+    $tty=~s|^/.*/||;
+
+    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	print "$fullname, ditt kontonamn är: $name.\n";
+    } else {
+	print "$fullname, your account name is: $name.\n";
+    }
+
+    # Read from '/usr/bin/w'
+    %WHO = &get_online();
+
+    # Get the remote hostname...
+    $i = 0;
+  loop: while($WHO{$i}) {
+      ($user_name, $user_host, $user_tty, $dummy) = split(' ', $WHO{$i});
+
+      if( $user_tty ) {
+	  if( ($name eq $user_name) && ($tty eq $user_tty) ) {
+	      $host = $user_host;
+
+	      if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		  die "Du har ingen remote host. Du sitter ju lokalt - Pucko!\n" if(! defined $host);
+	      } else {
+		  die "You do not have a remote host. You are sitting localy - Stupid!\n" if(! defined $host);
+	      }
+
+	      last loop;
+	  }
+
+	  $i++;
+      } else {
+	  $i++;
+	  next;
+      }
+      close(WHO);
+  }
+
+    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	if(! defined $host) {
+	    print "\n\nKan inte klura ut var du sitter... Ledsen..\n";
+	    die "Det _KAN_ vara sa att UTMP filen ar korrupt, prata med någon av dom ansvariga..!\n";
+	} else {
+	    print " Du sitter just nu på $host ";
+	}
+    } else {
+	if(! defined $host) {
+	    print "\n\nCan't find your host.. Sorry..\n";
+	    die "It _MIGHT_ be the UTMP file which is corrupt, speak to someone in charge..!\n";
+	} else {
+	    print " You are right now sitting on $host ";
+	}
+    }
+
+    if ($host !~ /\d\d\.\d\d\.\d\d\.\d\d/) {
+	# ok.. vi har inte ett IP nummer än.. Kolla mot dns..
+	$ip = &find_ip($host);
+
+	if(! $ip) {
+	    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+		die "\n\nLedsen.. DNS'en kan inte hitta host `$host'..\n Var snäll och tala med någon av dom ansvariga...!\n";
+	    } else {
+		die "\n\nSorry.. The DNS can't find host `$host'..\n Please speak with one of the admins...!\n";
+	    }
+	}
+    } else {
+	$ip=$host;
+    }
+    
+    print "($ip)\n";
+    return $ip;
+}
+
+
+sub wait_to_end_of_session {
+    my($force_exit);
+
+#    $OUTPUT_AUTOFLUSH=1;
+    system("/bin/stty -echo"); # bort med echo till skärm..
+
+    $SIG{'CHLD'}='wait_to_end_of_session_exit';
+    # forka igång enter vänt procen..
+    if(!fork()) {
+	&wait_to_end_child() ;
+	exit 0;
+    }
+
+    # För mer info om hur ccw's tcpquota funkar, skriv 'man tcpquota'
+    &info();
+    
+    sleep( 1 );
+    &show_status_header();
+
+    while(! $end && ! &check_allowed($dbh,$name)) {
+	&update_db($dbh,$ip,$name);
+    
+	if( &show_status($dbh,$ip,$name) ) {
+	    $force_exit = 1;
+	    last;
+	}
+
+	sleep( $cf{'PERIOD'} );
+    }
+    $SIG{'CHLD'} = 'DEFAULT';
+  
+    system("/bin/stty echo"); # på med echo till skärm igen..
+  
+    # OK.. jag vet inte varför, men vi tappar kontaketn med msql
+    # här.. Något med signalerna att göra antar jag.. Ny koppling
+    # görs..
+    undef $dbh;
+
+    # Reopen the database connection...
+    &open_sql_server();
+
+    if( $force_exit ) {
+	return(1);
+    } else {
+	return(0);
+    }
+}
+
+# this one keeps the masq entrie "warm"
+sub wait_to_end_child {
+  local($dumm);
+  $SIG{'CHLD'}='DEFAULT';
+  print "\n";
+
+  if( $cf{'LANGUAGE'} eq 'svenska' ) {
+      print "      Tryck på ENTER för att avsluta nätaccessen.\n\n";
+  } else {
+      print "        Please press ENTER to end masquerading.\n\n";
+  }
+
+  $dumm=<STDIN>;
+  exit 0;
+}
+
+# Vi kommer hit när wait_to_end_child dör.. Här sätts $end, se ovan..
+sub wait_to_end_of_session_exit {
+  $end=1;
+  return 0;
+}
+
+sub show_status_header {
+    #       123456789012345678901234567890123456789012345678901234567890123456
+    if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	printf("Konto         Saldo:   i quota-sekunder, i SEK          Debiterad    Kopplingar\n");
+    } else {
+	printf("Account       Total:   in quota seconds, in $cf{'MONEY_VALUE'}          Debit        Connections\n");
+    }
+}
+
+sub show_status {
+    local($db,$ip,$name)=@_;
+    local($sth,$cur,$cnts,$count,$open,@message);
+    local($OUTPUT_AUTOFLUSH)=1;
+
+    $sth=$dbh->prepare("select quota from tcptab where name = '$name'");
+    $sth->execute || print "Database select error to tab tcptab: $dbh->errstr";
+    $cur=$sth->fetchrow_array;
+
+    $sth=$dbh->prepare("select cnts,counter,open from masq where name = '$name'");
+    $sth->execute || print "Database select error to tab masq: $dbh->errstr";
+    ($cnts,$count,$open)=$sth->fetchrow_array;
+
+    if(! defined($open) ) {
+	# Some one have removed our host entry in the firewall...
+	# Create a message...
+	if( $cf{'LANGUAGE'} eq 'svenska' ) {
+	    push(@message, "\n\nNågon har stängt firewallen för dig...\n");
+	    push(@message, "Starta bara om programet (kör ut igen)\n");
+	} else {
+	    push(@message, "\n\nSomeone/Something have closed the firewall for you...\n");
+	    push(@message, "Just restart the program (execute openhost again)\n");
+	}
+
+	# Send the message
+	&send_message($name, @message);
+
+	return( 1 );
+    }
+
+    printf("\r%-12s                 %10d,%-8d           %6d    %6d\t\r",
+	   $name,$cur,abs(int($cur / 60 * 0.1)), $count,$cnts );
+
+    return( 0 );
+}
+
+# uppdatera msql så att tcpquotad verkligen vet om att vi är me..
+#
+sub update_db {
+    local($db,$ip,$name)=@_;
+    $sth=$dbh->prepare("update masq set tic=$cf{TICS} where host = '$ip'");
+    $sth->execute || print "Oppps.. Could not update your post in the database: $dbh->errstr";
+}
+
+sub logg {
+    local($lvl, $msg) = @_;
+
+    if($lvl > 0 || $DEBUG) {
+	system("/usr/bin/logger -p local3.info -t tcpmasq[$PID] $msg");
+    }
+}

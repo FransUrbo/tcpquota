@@ -1,0 +1,24 @@
+Source: tcpquota
+Section: contrib/admin
+Priority: extra
+Maintainer: Turbo Fredriksson <turbo@debian.org>
+Standards-Version: 2.4.0.0
+
+Package: tcpquota
+Architecture: all
+Depends: perl, libdbi-perl, libnet-perl, libdbd-mysql-perl | libdbd-msql-perl, mysql-base | msql
+Description: A dialout/masquerading monitoring package.
+ TCPQuota  monitors and debit users depending on there
+ online time  (dialout). The program is made for those
+ who  have a  local network  with  a server  that also
+ functions as a Internet gateway (among other things).
+ .
+ The  server  runs diald,  for example, which does the
+ actual  dial-on-demand,  and this package which debit
+ each  user,   wheter  from  the   server  or  from  a
+ masqueraded host  (program includes masquerade code).
+ .
+ All a user from  inside the  gateway/firewall have to
+ do  is run  the command 'openhost',  and the hostname
+ and username  is masqueraded  and debited acording to
+ the time they spend calling out.

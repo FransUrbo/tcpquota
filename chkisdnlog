@@ -1,0 +1,105 @@
+#!/usr/bin/perl -w
+
+# $Header: /usr/lib/cvs/root/tcpquota/chkisdnlog,v 1.1 1998/04/19 10:41:24 turbo Exp $
+#
+# $Log: chkisdnlog,v $
+# Revision 1.1  1998/04/19 10:41:24  turbo
+# Find out how long the ISDN line have been online...
+#
+#
+
+# Does we have any arguments?
+if( $ARGV[0] ) {
+    foreach $arg (@ARGV) {
+	if( $arg =~ /^[0-9]/ ) {
+	    $DATE = $arg;
+	} else {
+	    &help();
+	}
+    }
+} else {
+    &help();
+}
+
+$i = 0; $tot_online = 0;
+
+# Open the log file...
+open(ISDNLOG, "/var/log/up_down.log") || die "Cant open log file '/var/log/up_down.log', $!";
+
+# Print a little header...
+print "Date    Up      Down  Online\n";
+#      980301: 00:57   01:05      8
+
+while(! eof(ISDNLOG) ) {
+    $line = <ISDNLOG>;
+    next if( $line !~ /$DATE/ );
+
+    if( $line =~ /^up:/ ) {
+	$up{$i}   = (split(' ', $line))[7];
+
+	$date{$i} = (split(' ', $line))[6];
+    } elsif( $line =~ /^down:/ ) {
+	$down{$i} = (split(' ', $line))[7];
+    }
+
+    if( $up{$i} && $down{$i} ) {
+	# Calculate how many minutes this is...
+	($up_hour, $up_minute)     = split(':', $up{$i});
+	($down_hour, $down_minute) = split(':', $down{$i});
+
+	# ----------------------------------------------------
+
+	# 50 - 46 = 4
+
+	# 980301: 05:46   05:50 => (60-46) + (0*60) + ?? =   4
+	# 980301: 00:57   01:05 => (60-57) + (0*60) + 05 =   8
+	# 980303: 19:16   23:34 => (60-16) + (3*60) + 34 = 258
+	# 980302: 23:10   01:21 => (60-10) + (1*60) + 21 = 131
+	# 980304: 22:46   00:16 => (60-46) + (1*60) + 16 =  90
+
+	# ----------------------------------------------------
+
+	# How many hours?
+	$hours = 0;
+
+	if( $up_hour != $down_hour ) {
+	    $j = $up_hour + 1;
+	    while( $j < $down_hour ) {
+		if( $j == 24 ) {
+		    $j = 0;
+		} else {
+		    $j++;
+		}
+
+		$hours++;
+	    }
+
+	    $online = (60 - $up_minute) + ($hours * 60) + $down_minute;
+	} else {
+	    $online = $down_minute - $up_minute;
+	}
+
+	$hour   = $online / 60;
+	$hour   = (split('\.', $hour))[0];
+	$min    = $online - ($hour * 60);
+	$min    = sprintf("%0.2d", $min);
+
+	printf("$date{$i}: $up{$i}\t$down{$i}\t%4d ($hour:$min)\n", $online);
+	$tot_online += $online;
+
+	$i++;
+    }
+}
+
+# Print out the total time online...
+$hour_tot = $tot_online / 60;
+$hour_tot = (split('\.', $hour_tot))[0];
+$min_tot  = $tot_online - ($hour_tot * 60);
+$min_tot  = sprintf("%0.2d", $min_tot);
+printf("Total time online: $tot_online minutes ($hour_tot hours, $min_tot minutes)\n");
+
+sub help {
+    print "Use: $0 <yearmonth>\n";
+    print "Ex:  $0 9802 Gives a graph on how much (daily) the ISDN link have gone up/down...\n";
+    exit;
+}

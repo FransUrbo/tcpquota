@@ -1,0 +1,52 @@
+.TH ADDTCPQUOTA 8 "TCPQuota Utilities" "FSF" \" -*- nroff -*-
+.SH NAME
+.B addtcpquota
+\- Allowe or disallowe users to use tcp quota
+.SH SYNOPSIS
+.B addtcpquota
+[options] [user]
+.br
+.B addtcpquota
+{?, -h, --help}
+.br
+.B addtcpquota
+{l, -l, --lst}
+.br
+.B addtcpquota
+{all, -A, --all} <USER>
+.br
+.B addtcpquota
+{add, -a, --add} <USER>
+.br
+.B addtcpquota
+{rem, -r, --rem} <USER>
+.br
+.SH DESCRIPTION
+Manipulate the database used by 'tcpquotad' to check if a
+user is allowed to use the TCP link created by PPPd or the
+like...
+.SH OPTIONS
+.TP
+.I "?, \-h, \-\-help"
+Print a usage message on standard output and exit
+successfully.
+.TP
+.I "all, \-A, \-\-all"
+Check if a user is ALLowed to use the TCP link,
+outputs '1' if allowed, and '0' if not.
+.TP
+.I "add, \-a, \-\-add"
+ADD a user the allowed database.
+.TP
+.I "rem, \-r, \-\-rem"
+REMove a user from the allowed database.
+.TP
+.I "lst, \-l, \-\-lst"
+LiST the allowed database.
+.SH SEE ALSO
+.BR tcpquotad (8), 
+.BR tcpquotaadmin (8)
+.SH AUTHOR
+Turbo Fredriksson, <turbo@tripnet.se>
+.br
+Martin Budsjoe, <marbud@tripnet.se>

@@ -1,0 +1,8 @@
+/etc/tcpquota/tcpquota.cf
+/etc/tcpquota/tcpquota.greet.svenska
+/etc/tcpquota/tcpquota.greet.english
+/etc/tcpquota/tcpquota.info.svenska
+/etc/tcpquota/tcpquota.info.english
+/etc/init.d/tcpquotad
+/etc/cron.weekly/tcpquota
+/usr/lib/tcpquota/cron_functions.pl
