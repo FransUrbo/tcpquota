@@ -371,16 +371,19 @@ sub init {
 #
 sub init_sql_server {
     undef( $dbh );
+    my($connect_string) = "dbi:$cf{'ENGINE'}:tcpquota:$cf{'SERVER'}";
+
+    $connect_string .= ", $cf{'SQL_USERNAME'}" if(defined($cf{'SQL_USERNAME'}));
+    $connect_string .= ", $cf{'SQL_PASSWORD'}" if(defined($cf{'SQL_PASSWORD'}));
 
     # Open up the database connection...
-    $dbh = DBI->connect("dbi:$cf{'ENGINE'}:tcpquota:$cf{'SERVER'}");
-
+    $dbh = DBI->connect( $connect_string );
     if(! $dbh ) {
 	printf(STDERR "Can't connect to database at $cf{'SERVER'}." );
 	return;
     }
 
-    &logg(1, "START: tcpquota opened a connection to mSQL...\n");
+    &logg(1, "START: tcpquota opened a connection to $cf{'ENGINE'}...\n");
 }
 
 ######################################################################

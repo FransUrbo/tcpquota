@@ -321,10 +321,14 @@ sub readconfig {
 #
 sub open_sql_server {
     undef( $dbh );
+    my($connect_string) = "dbi:$cf{'ENGINE'}:tcpquota:$cf{'SERVER'}";
+
+    $connect_string .= ", $cf{'SQL_USERNAME'}" if(defined($cf{'SQL_USERNAME'}));
+    $connect_string .= ", $cf{'SQL_PASSWORD'}" if(defined($cf{'SQL_PASSWORD'}));
 
     # Open up the database connection...
-    $dbh = DBI->connect( "dbi:$cf{'ENGINE'}:tcpquota:$cf{'SERVER'}")
-	|| die( "Can't connect to database at '$cf{'SERVER'}." );
+    $dbh = DBI->connect( $connect_string )
+	|| die( "Can't connect to database at '$cf{'SERVER'}.\n" );
 }
 
 ######################################################################

@@ -22,6 +22,13 @@ LOCALNET=42.42.0.0 192.168.0.0
 # port number.
 SERVER=localhost:4333
 
+#
+# Username and password to use for connecting
+# to the SQL server as (don't use the servers
+# 'root' user for security reasons!)
+SQL_USERNAME=
+SQL_PASSWORD=
+
 # Which database engine should we use?
 ENGINE=mSQL
 
