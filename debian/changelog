@@ -1,3 +1,18 @@
+tcpquota (1.6.15-8) unstable; urgency=low
+
+  * Updated standards version again.
+  * Added support for specifying the username and password to use
+    for connecting to the SQL database.
+
+ -- Turbo Fredriksson <turbo@debian.org>  Fri,  8 Mar 2002 10:24:11 +0100
+
+tcpquota (1.6.15-7.1) unstable; urgency=low
+
+  * Non-maintainer upload
+  * Changed postinst to reference tcpquota (Fixes: Bug#53348)
+
+ -- Anand Kumria <wildfire@progsoc.uts.edu.au>  Sun, 10 Jan 2000 02:18:23 +1100
+
 tcpquota (1.6.15-7) unstable; urgency=low
 
   * Updated the dependecy on perl/perl5.
