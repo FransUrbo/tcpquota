@@ -45,8 +45,8 @@ binary-arch: build
 
 	dh_installmanpages
 	dh_undocumented toptcp.1
-	ln -s tcp_masq_openfw.8.gz debian/tmp/usr/man/man8/openfw.8.gz
-	ln -s tcp_masq_openhost.8.gz debian/tmp/usr/man/man8/openhost.8.gz
+	ln -s tcp_masq_openfw.8.gz debian/tmp/usr/share/man/man8/openfw.8.gz
+	ln -s tcp_masq_openhost.8.gz debian/tmp/usr/share/man/man8/openhost.8.gz
 
 	dh_installchangelogs
 	dh_compress
