@@ -66,13 +66,13 @@ case "$1" in
 		echo "TCPQuota should be restarted for the new version to be used."
 		read -p "Would you like to restart TCPQuota now [Y/n] " s
 		if [ "$s" != "n" -a "$s" != "N" ]; then
-		    /etc/init.d/tcpquotad restart
+		    /etc/init.d/tcpquota restart
 		else
 		    echo "Oki, you can do that later by issuing the command:"
 		    echo
-		    echo "  /etc/init.d/tcpquotad restart"
+		    echo "  /etc/init.d/tcpquota restart"
 		    echo
-		    echo "(or if it is not started, /etc/init.d/tcpquotad start)"
+		    echo "(or if it is not started, /etc/init.d/tcpquota start)"
 		    echo
 		fi
 
@@ -257,14 +257,20 @@ EOF
 	    read -p "Would you like to start TCPQuota now [y/N] " s
 
 	    if [ "$s" = "y" -o "$s" = "Y" ]; then
-		/etc/init.d/tcpquotad start
+		/etc/init.d/tcpquota start
 	    else
 		echo "Oki, you can do that later by issuing the command:"
 		echo
-		echo "  /etc/init.d/tcpquotad start"
+		echo "  /etc/init.d/tcpquota start"
 		echo
 	    fi
 	fi
+
+	# install compatibilit symlinks
+	if [ -d /usr/doc -a ! -e /usr/doc/tcpquota -a -d /usr/share/doc/tcpquota ]; then
+		ln -sf ../share/doc/tcpquota /usr/doc/tcpquota
+	fi
+
 	;;
 
     abort-upgrade|abort-deconfigure|abort-remove)
